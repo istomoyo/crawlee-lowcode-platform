@@ -1,0 +1,95 @@
+# ------------------------
+# Node
+# ------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# ------------------------
+# Logs
+# ------------------------
+logs/
+*.log
+*.log.*
+debug.log
+error.log
+
+# ------------------------
+# Dist / Build
+# ------------------------
+dist/
+build/
+.tmp/
+.temp/
+out/
+coverage/
+
+# ------------------------
+# Environment variables
+# ------------------------
+.env
+.env.*
+!.env.example
+
+# ------------------------
+# Editor files
+# ------------------------
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ------------------------
+# OS files
+# ------------------------
+.DS_Store
+Thumbs.db
+
+# ------------------------
+# TypeScript
+# ------------------------
+*.tsbuildinfo
+
+# ------------------------
+# Frontend (Vite) caches
+# ------------------------
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.cache/
+
+# ------------------------
+# Backend (NestJS)
+# ------------------------
+backend/node_modules/
+backend/dist/
+backend/.cache/
+backend/.npm/
+
+# ------------------------
+# Crawlee temporary files
+# ------------------------
+storage/
+crawlee_storage/
+apify_storage/
+apify_logs/
+
+# ------------------------
+# MySQL dumps
+# ------------------------
+*.sql
+!database/ddl.sql
+
+# ------------------------
+# Local uploads or temp data
+# ------------------------
+uploads/
+temp/
