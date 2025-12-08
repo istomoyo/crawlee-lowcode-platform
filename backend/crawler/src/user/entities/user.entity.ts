@@ -4,10 +4,8 @@ import {
   Column,
   CreateDateColumn,
   UpdateDateColumn,
-  OneToMany,
 } from 'typeorm';
-import { Task } from '../../task/entities/task.entity';
-
+import { UserRole } from './user-role.enum';
 @Entity()
 export class User {
   @PrimaryGeneratedColumn()
@@ -25,9 +23,12 @@ export class User {
   @Column({ nullable: true })
   avatar: string;
 
-  // 登录状态（用于限制一个设备在线）
-  @Column({ type: 'varchar', length: 500, nullable: true })
-  loginToken: string | null;
+  @Column({
+    type: 'enum',
+    enum: UserRole,
+    default: UserRole.USER,
+  })
+  role: UserRole; // 🔥 角色字段（关键）
 
   @CreateDateColumn()
   createdAt: Date;

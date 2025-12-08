@@ -8,6 +8,10 @@ import { ExecutionModule } from './execution/execution.module';
 import { ResultModule } from './result/result.module';
 import { RedisModule } from './redis/redis.module';
 import { AuthModule } from './auth/auth.module';
+import { MulterModule } from '@nestjs/platform-express';
+import { diskStorage } from 'multer';
+import { join } from 'path';
+
 @Module({
   imports: [
     TypeOrmModule.forRoot({
@@ -26,6 +30,15 @@ import { AuthModule } from './auth/auth.module';
     ResultModule,
     RedisModule,
     AuthModule,
+    MulterModule.register({
+      storage: diskStorage({
+        destination: join(__dirname, '..', 'upload'),
+        filename: (req, file, cb) => {
+          const filename = `${Date.now()}-${file.originalname}`;
+          cb(null, filename);
+        },
+      }),
+    }),
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -1,34 +1,39 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+// task.controller.ts
+import { Controller, Get, Req, UseGuards, Param, Query } from '@nestjs/common';
 import { TaskService } from './task.service';
-import { CreateTaskDto } from './dto/create-task.dto';
-import { UpdateTaskDto } from './dto/update-task.dto';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+// import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
+import { UserRole } from '../user/entities/user-role.enum';
 
 @Controller('task')
 export class TaskController {
   constructor(private readonly taskService: TaskService) {}
 
-  @Post()
-  create(@Body() createTaskDto: CreateTaskDto) {
-    return this.taskService.create(createTaskDto);
+  @UseGuards(JwtAuthGuard)
+  @Get('my-tasks')
+  getUserTasks(@Req() req, @Query() query) {
+    const page = Number(query.page) || 1;
+    const limit = Number(query.limit) || 10;
+    const search = query.search || '';
+    const status = query.status || undefined;
+    return this.taskService.getUserTasks(req.user.id, {
+      page,
+      limit,
+      search,
+      status,
+    });
   }
 
-  @Get()
-  findAll() {
-    return this.taskService.findAll();
-  }
-
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.taskService.findOne(+id);
-  }
-
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() updateTaskDto: UpdateTaskDto) {
-    return this.taskService.update(+id, updateTaskDto);
-  }
-
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.taskService.remove(+id);
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @Get('all-tasks')
+  getAllTasks(@Query() query) {
+    const page = Number(query.page) || 1;
+    const limit = Number(query.limit) || 10;
+    const search = query.search || '';
+    const status = query.status || undefined;
+    return this.taskService.getAllTasks({ page, limit, search, status });
   }
 }

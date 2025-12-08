@@ -1,26 +1,56 @@
-import { Injectable } from '@nestjs/common';
-import { CreateTaskDto } from './dto/create-task.dto';
-import { UpdateTaskDto } from './dto/update-task.dto';
+// task.service.ts
+import { Injectable, BadRequestException } from '@nestjs/common';
+import { Repository, Like } from 'typeorm';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Task } from './entities/task.entity';
 
 @Injectable()
 export class TaskService {
-  create(createTaskDto: CreateTaskDto) {
-    return 'This action adds a new task';
+  constructor(
+    @InjectRepository(Task)
+    private taskRepo: Repository<Task>,
+  ) {}
+
+  async getUserTasks(
+    userId: number,
+    params: { page: number; limit: number; search?: string; status?: string },
+  ) {
+    const { page, limit, search, status } = params;
+
+    const where: any = { user: { id: userId } };
+    if (search) where.name = Like(`%${search}%`);
+    if (status) where.status = status;
+
+    const [tasks, total] = await this.taskRepo.findAndCount({
+      where,
+      order: { createdAt: 'DESC' },
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+
+    return { total, page, limit, tasks };
   }
 
-  findAll() {
-    return `This action returns all task`;
-  }
+  async getAllTasks(params: {
+    page: number;
+    limit: number;
+    search?: string;
+    status?: string;
+  }) {
+    const { page, limit, search, status } = params;
 
-  findOne(id: number) {
-    return `This action returns a #${id} task`;
-  }
+    const where: any = {};
+    if (search) where.name = Like(`%${search}%`);
+    if (status) where.status = status;
 
-  update(id: number, updateTaskDto: UpdateTaskDto) {
-    return `This action updates a #${id} task`;
-  }
+    const [tasks, total] = await this.taskRepo.findAndCount({
+      where,
+      order: { createdAt: 'DESC' },
+      skip: (page - 1) * limit,
+      take: limit,
+      relations: ['user'],
+    });
 
-  remove(id: number) {
-    return `This action removes a #${id} task`;
+    return { total, page, limit, tasks };
   }
 }

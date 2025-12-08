@@ -1,15 +1,17 @@
+import * as dotenv from 'dotenv';
+dotenv.config();
+
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
-import { config } from 'dotenv';
-
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
-
-config(); // 自动读取 .env 文件
+import { join } from 'path';
+import { NestExpressApplication } from '@nestjs/platform-express';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true, // 自动过滤未在 DTO 中定义的字段
@@ -17,6 +19,8 @@ async function bootstrap() {
       transform: true, // 自动类型转换（例如 string → number）
     }),
   );
+  // 设置静态资源访问
+  app.useStaticAssets(join(__dirname, '..', 'uploads'), { prefix: '/uploads' });
 
   // 全局响应拦截器
   app.useGlobalInterceptors(new ResponseInterceptor());
