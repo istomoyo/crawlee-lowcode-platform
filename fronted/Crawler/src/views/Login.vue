@@ -24,27 +24,52 @@
       <transition
         name="animate__animated"
         mode="out-in"
-        enter-active-class="animate__animated animate__jackInTheBox"
+        enter-active-class="animate__animated animate__zoomIn"
         leave-active-class="animate__animated animate__hinge"
       >
-        <component :is="currentCard" :key="model" @switch="toggleModel" />
+        <component
+          :is="currentCard"
+          :key="model"
+          :form="tempForm"
+          @switch="toggleModel"
+        />
       </transition>
     </div>
   </section>
 </template>
 
 <script lang="ts" setup>
-import { ref, computed } from "vue";
+import { ref, computed, reactive } from "vue";
+interface TempForm {
+  email: string;
+  username?: string;
+  password?: string;
+}
+const model = ref<"login" | "register" | "code">("login");
+const tempForm = reactive<TempForm>({
+  email: "",
+  username: "",
+  password: "",
+});
 import LoginCard from "@/components/LoginCard.vue";
 import RegisterCard from "@/components/RegisterCard.vue";
+import CodeCard from "@/components/CodeCard.vue";
 
-const model = ref<"login" | "register">("login");
+// 更优雅的映射表
+const cardMap = {
+  login: LoginCard,
+  register: RegisterCard,
+  code: CodeCard,
+} as const;
 
-const currentCard = computed(() =>
-  model.value === "login" ? LoginCard : RegisterCard
-);
+// 动态组件
+const currentCard = computed(() => cardMap[model.value]);
 
-const toggleModel = () => {
-  model.value = model.value === "login" ? "register" : "login";
+const toggleModel = (
+  to?: keyof typeof cardMap,
+  form?: { email: string; username?: string; password?: string }
+) => {
+  if (form) Object.assign(tempForm, form);
+  if (to) model.value = to;
 };
 </script>

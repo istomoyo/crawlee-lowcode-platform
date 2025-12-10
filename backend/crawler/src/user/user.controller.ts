@@ -9,6 +9,7 @@ import {
   UseInterceptors,
   UploadedFile,
   Query,
+  Res,
 } from '@nestjs/common';
 import { UserService } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -26,30 +27,41 @@ import type { Express } from 'express';
 import type { Request } from 'express';
 import { Roles } from '../auth/roles.decorator';
 import { UserRole } from './entities/user-role.enum';
+import { SuccessMessage } from '../common/decorators/success-message.decorator';
+// import { Res } from '@nestjs/common';
+import type { Response } from 'express';
 
 @Controller('user')
 export class UserController {
   constructor(private readonly userService: UserService) {}
   // 发送验证码
+  @SuccessMessage('发送邮件成功')
   @Post('send-code')
-  sendCode(@Body('email') email: string) {
-    return this.userService.sendVerifyCode(email);
+  sendCode(
+    @Body('email') email: string,
+    @Body('captchaId') captchaId: string,
+    @Body('captchaText') captchaText: string,
+  ) {
+    return this.userService.sendVerifyCode(email, captchaId, captchaText);
   }
 
   // user.controller.ts
+  @SuccessMessage('注册成功')
   @Post('register')
   register(@Body() dto: CreateUserDto & { code: string }) {
     return this.userService.register(dto);
   }
 
   // 登录
+  @SuccessMessage('登录成功')
   @Post('login')
-  login(@Body() dto: LoginUserDto) {
-    return this.userService.login(dto);
+  login(@Body() dto: LoginUserDto, @Res({ passthrough: true }) res: Response) {
+    return this.userService.login(dto, res);
   }
 
   @UseGuards(JwtAuthGuard)
   @Get('profile')
+  @SuccessMessage('获取用户信息成功')
   getProfile(@Req() req) {
     return this.userService.getProfile(req.user!.id);
   }
@@ -122,5 +134,15 @@ export class UserController {
     const limit = Number(query.limit) || 10;
     const search = query.search || '';
     return this.userService.getAllUsers({ page, limit, search });
+  }
+
+  @Get('captcha')
+  @SuccessMessage('获取验证码成功')
+  async getCaptcha() {
+    const { svg, captchaId } = await this.userService.createCaptcha();
+    return {
+      captchaId,
+      svg,
+    };
   }
 }

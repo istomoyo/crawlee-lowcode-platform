@@ -1,3 +1,4 @@
+import { da } from "element-plus/es/locales.mjs";
 import request from "./request";
 
 // 登录
@@ -6,62 +7,46 @@ export interface LoginParams {
   password: string;
 }
 
-export interface LoginRes {
-  token: string;
-  user: {
-    id: number;
-    username: string;
-    email: string;
-    avatar?: string;
-  };
-}
-
 export function loginApi(data: LoginParams) {
-  return request.post<LoginRes>("/auth/login", data);
+  return request.post("/api/user/login", data);
 }
 
-// 获取用户列表
-export interface UserItem {
-  id: number;
-  username: string;
-  email: string;
-  avatar?: string;
-  role: "admin" | "user";
-  createdAt: string;
+// 图形验证码响应
+export interface CaptchaRes {
+  captchaId: string;
+  svg: string;
 }
 
-export function getUserListApi() {
-  return request.get<UserItem[]>("/users");
+// 获取图形验证码
+export function createCaptchaApi(): Promise<CaptchaRes> {
+  return request.get("/api/user/captcha");
 }
-
-// 获取单个用户信息
-export function getUserDetailApi(id: number) {
-  return request.get<UserItem>(`/users/${id}`);
-}
-
-// 创建用户
-export interface CreateUserParams {
+interface registerParams {
   username: string;
   email: string;
   password: string;
-  role?: "admin" | "user";
+  code: string;
 }
-export function createUserApi(data: CreateUserParams) {
-  return request.post("/users", data);
+// 注册
+export function registerApi(data: registerParams) {
+  return request.post("/api/user/register", data);
 }
-
-// 更新用户
-export interface UpdateUserParams {
-  username?: string;
-  email?: string;
-  password?: string;
-  role?: "admin" | "user";
-}
-export function updateUserApi(id: number, data: UpdateUserParams) {
-  return request.patch(`/users/${id}`, data);
+// 发送邮箱验证码
+export function sendEmailCodeApi(data: {
+  email: string;
+  captchaId: string;
+  captchaText: string;
+}) {
+  return request.post("/api/user/send-code", data);
 }
 
-// 删除用户
-export function deleteUserApi(id: number) {
-  return request.delete(`/users/${id}`);
+export interface UserInfo {
+  id: number;
+  email: string;
+  username: string;
+  role: string;
+}
+//获取用户详细信息
+export function getUserInfoApi(): Promise<UserInfo> {
+  return request.get("/api/user/profile");
 }

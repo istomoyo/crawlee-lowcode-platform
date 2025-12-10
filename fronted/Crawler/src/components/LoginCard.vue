@@ -37,7 +37,7 @@
       <span
         class="text-indigo-600 cursor-pointer hover:underline"
         type="primary"
-        @click="emit('switch')"
+        @click="emit('switch', 'register')"
       >
         去注册
       </span>
@@ -51,9 +51,18 @@ import { useRouter } from "vue-router";
 import { ElMessage, type FormInstance } from "element-plus";
 import { loginApi, type LoginParams } from "@/api/user";
 
-// ⚠️ 使用对象函数语法，兼容 TS + verbatimModuleSyntax
-const emit = defineEmits<{ (e: "switch"): void }>();
+const props = defineProps<{
+  form: { email: string };
+}>();
 
+// ⚠️ 使用对象函数语法，兼容 TS + verbatimModuleSyntax
+const emit = defineEmits<{
+  (
+    e: "switch",
+    to: "login" | "register" | "code",
+    form?: { email: string; username: string; password: string }
+  ): void;
+}>();
 const router = useRouter();
 const loading = ref(false);
 
@@ -64,23 +73,20 @@ const form: LoginParams = reactive({
   email: "",
   password: "",
 });
-
+if (props.form.email) form.email = props.form.email;
 const rules = {
   email: [{ required: true, message: "请输入邮箱", trigger: "blur" }],
   password: [{ required: true, message: "请输入密码", trigger: "blur" }],
 };
-
 const login = async () => {
   if (!loginForm.value) return;
 
   try {
     loading.value = true;
-    // ⚠️ 验证表单
     await loginForm.value.validate();
 
-    const res = await loginApi(form);
-    localStorage.setItem("token", res.data.token);
-    ElMessage.success("登录成功");
+    await loginApi(form); // ✅ 不再保存 token
+    // ElMessage.success("登录成功");
     router.push("/");
   } finally {
     loading.value = false;
