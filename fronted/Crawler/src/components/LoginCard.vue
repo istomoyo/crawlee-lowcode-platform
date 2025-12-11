@@ -49,8 +49,8 @@
 import { reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, type FormInstance } from "element-plus";
-import { loginApi, type LoginParams } from "@/api/user";
-
+import { type LoginParams } from "@/api/user";
+import { useUserStore } from "@/stores/user";
 const props = defineProps<{
   form: { email: string };
 }>();
@@ -78,16 +78,19 @@ const rules = {
   email: [{ required: true, message: "请输入邮箱", trigger: "blur" }],
   password: [{ required: true, message: "请输入密码", trigger: "blur" }],
 };
+const store = useUserStore();
+
 const login = async () => {
   if (!loginForm.value) return;
 
   try {
     loading.value = true;
     await loginForm.value.validate();
-
-    await loginApi(form); // ✅ 不再保存 token
-    // ElMessage.success("登录成功");
-    router.push("/");
+    store.init(); // 初始化读取 sessionStorage
+    await store.login(form); // 登录成功
+    router.replace("/"); // 跳首页
+  } catch (err: any) {
+    ElMessage.error(err.message || "登录失败");
   } finally {
     loading.value = false;
   }

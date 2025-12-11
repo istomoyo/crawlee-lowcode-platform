@@ -10,7 +10,7 @@ import router from "@/router";
 // 创建 axios 实例
 const request: AxiosInstance = axios.create({
   baseURL: "",
-  timeout: 5000,
+  timeout: 300000,
   withCredentials: true, // ✅ 允许发送 cookie
 });
 

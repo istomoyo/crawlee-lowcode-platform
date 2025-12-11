@@ -1,7 +1,7 @@
 import { createRouter, createWebHistory } from "vue-router";
 import type { RouteRecordRaw } from "vue-router";
 import { useUserStore } from "@/stores/user";
-import NotFound from "@/views/NotFound.vue"; // 404 页面组件
+import NotFound from "@/views/NotFound.vue";
 import BaseLayout from "@/layouts/BaseLayout.vue";
 
 const routes: Array<RouteRecordRaw> = [
@@ -23,7 +23,26 @@ const routes: Array<RouteRecordRaw> = [
       {
         path: "crawleer/task-add",
         name: "task-add",
-        component: () => import("@/views/TaskAdd.vue"),
+        component: () => import("@/views/task-add/TaskAdd.vue"),
+        meta: { keepAlive: true },
+        children: [
+          {
+            path: "basic",
+            component: () => import("@/views/task-add/Step1BasicInfo.vue"),
+            meta: { keepAlive: true },
+          },
+          {
+            path: "structure",
+            component: () =>
+              import("@/views/task-add/Step2StructureSelect.vue"),
+            meta: { keepAlive: true },
+          },
+          {
+            path: "mapping",
+            component: () => import("@/views/task-add/Step3FieldMapping.vue"),
+            meta: { keepAlive: true },
+          },
+        ],
       },
     ],
   },
@@ -40,22 +59,16 @@ const router = createRouter({
 });
 
 router.beforeEach(async (to) => {
-  const userStore = useUserStore();
+  const store = useUserStore();
 
-  // 登录页逻辑
-  if (to.path === "/login") {
-    if (userStore.user) return { path: "/" }; // 已登录 → 跳首页
-    return true;
-  }
+  // 初始化 Pinia user
+  await store.init();
 
-  // 非登录页逻辑
-  if (userStore.user) return true; // 已有用户信息 → 放行
+  const isLogin = !!store.user;
+  if (to.path === "/login" && isLogin) return { path: "/" };
+  if (to.path !== "/login" && !isLogin) return { path: "/login" };
 
-  // 尝试获取用户信息（只会请求一次）
-  const user = await userStore.fetchUserInfo();
-  if (!user) return { path: "/login" }; // 没有用户信息 → 强制跳登录页
-
-  return true; // 有用户信息 → 放行
+  return true;
 });
 
 export default router;

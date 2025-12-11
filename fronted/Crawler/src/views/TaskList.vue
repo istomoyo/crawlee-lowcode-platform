@@ -1,75 +1,112 @@
 <template>
-  <el-card>
-    <div style="margin-bottom: 10px">
-      <el-button type="primary" @click="goCreate">新建任务</el-button>
+  <div class="p-4"> 
+    <!-- 顶部工具栏 -->
+    <div class="flex justify-between items-center mb-4">
+      <el-input
+        placeholder="搜索任务名称 / URL"
+        clearable
+        style="width: 260px"
+      />
+      <el-button type="primary">新增任务</el-button>
     </div>
-    <el-table :data="tasks" style="width: 100%" v-loading="loading">
-      <el-table-column prop="id" label="ID" width="80" />
-      <el-table-column prop="title" label="标题" />
-      <el-table-column prop="status" label="状态">
+
+    <!-- 表格 -->
+    <el-table :data="mockData" border stripe style="width: 100%">
+      <el-table-column prop="id" label="ID" width="70" />
+
+      <el-table-column prop="name" label="任务名称" min-width="160" />
+
+      <el-table-column
+        prop="url"
+        label="URL"
+        min-width="220"
+        show-overflow-tooltip
+      />
+
+      <el-table-column label="状态" width="120">
         <template #default="{ row }">
-          <el-tag :type="statusType(row.status)">{{
-            statusText(row.status)
-          }}</el-tag>
+          <!-- <el-tag :type="statusType(row.status)" effect="dark">
+            {{ row.status }}
+          </el-tag> -->
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="160">
-        <template #default="{ row }">
-          <el-button size="small" type="primary" @click="editTask(row.id)"
-            >编辑</el-button
-          >
-          <el-button size="small" type="danger" @click="deleteTask(row.id)"
-            >删除</el-button
-          >
+
+      <el-table-column prop="createdAt" label="创建时间" width="180" />
+
+      <el-table-column prop="updatedAt" label="更新时间" width="180" />
+
+      <el-table-column label="操作" width="200">
+        <template #default>
+          <el-button size="small">编辑</el-button>
+          <el-button size="small" type="danger">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
-  </el-card>
+
+    <!-- 分页 -->
+    <div class="mt-4 flex justify-end">
+      <el-pagination
+        background
+        layout="prev, pager, next"
+        :total="100"
+        :page-size="10"
+      />
+    </div>
+  </div>
 </template>
 
-<script lang="ts" setup>
-import { ref, onMounted } from "vue";
-import { useRouter } from "vue-router";
-import { getTaskListApi, deleteTaskApi, TaskItem } from "@/api/task";
-import { ElMessage, ElMessageBox } from "element-plus";
+<script setup>
+// —— 纯样式 DEMO 数据 ——
+const mockData = [
+  {
+    id: 1,
+    name: "爬取知乎热榜",
+    url: "https://www.zhihu.com/hot",
+    status: "pending",
+    createdAt: "2025-01-01 12:00",
+    updatedAt: "2025-01-01 12:00",
+  },
+  {
+    id: 2,
+    name: "爬取哔哩哔哩热门视频",
+    url: "https://www.bilibili.com",
+    status: "running",
+    createdAt: "2025-01-01 12:00",
+    updatedAt: "2025-01-01 12:03",
+  },
+  {
+    id: 3,
+    name: "爬取微博热搜",
+    url: "https://weibo.com/hot",
+    status: "success",
+    createdAt: "2025-01-01 12:00",
+    updatedAt: "2025-01-01 12:10",
+  },
+  {
+    id: 4,
+    name: "爬取豆瓣电影榜单",
+    url: "https://douban.com/movie",
+    status: "failed",
+    createdAt: "2025-01-01 12:00",
+    updatedAt: "2025-01-01 12:01",
+  },
+];
 
-const router = useRouter();
-const tasks = ref<TaskItem[]>([]);
-const loading = ref(false);
-
-const loadTasks = async () => {
-  loading.value = true;
-  try {
-    tasks.value = await getTaskListApi();
-  } finally {
-    loading.value = false;
+// 状态颜色
+const statusType = (status) => {
+  switch (status) {
+    case "pending":
+      return "";
+    case "running":
+      return "warning";
+    case "success":
+      return "success";
+    case "failed":
+      return "danger";
+    default:
+      return "";
   }
 };
-
-const goCreate = () => {
-  router.push("/tasks/edit");
-};
-
-const editTask = (id: number) => {
-  router.push(`/tasks/edit/${id}`);
-};
-
-const deleteTask = async (id: number) => {
-  try {
-    await ElMessageBox.confirm("确定删除吗?", "提示");
-    await deleteTaskApi(id);
-    ElMessage.success("删除成功");
-    loadTasks();
-  } catch {}
-};
-
-const statusText = (status: number) => {
-  return status === 0 ? "待办" : status === 1 ? "进行中" : "完成";
-};
-
-const statusType = (status: number) => {
-  return status === 0 ? "info" : status === 1 ? "warning" : "success";
-};
-
-onMounted(loadTasks);
 </script>
+
+<style scoped></style>

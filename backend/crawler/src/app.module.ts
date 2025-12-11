@@ -14,6 +14,7 @@ import { join } from 'path';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 
+import { ServeStaticModule } from '@nestjs/serve-static';
 @Module({
   imports: [
     TypeOrmModule.forRoot({
@@ -40,6 +41,11 @@ import { APP_INTERCEPTOR } from '@nestjs/core';
           cb(null, filename);
         },
       }),
+    }),
+    // 新增：静态目录，用于访问截图
+    ServeStaticModule.forRoot({
+      rootPath: join(__dirname, '..', 'screenshots'), // 截图根目录
+      serveRoot: '/screenshots', // 前端访问前缀
     }),
   ],
   controllers: [AppController],

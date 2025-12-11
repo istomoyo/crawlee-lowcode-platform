@@ -21,7 +21,6 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { User } from '../../user/entities/user.entity';
-
 @Entity()
 export class Task {
   @PrimaryGeneratedColumn()
@@ -44,6 +43,9 @@ export class Task {
 
   @ManyToOne(() => User)
   user: User;
+
+  @Column({ nullable: true })
+  screenshotPath: string; // 爬取首页截图路径
 
   @CreateDateColumn()
   createdAt: Date;
