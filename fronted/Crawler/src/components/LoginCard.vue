@@ -86,8 +86,9 @@ const login = async () => {
   try {
     loading.value = true;
     await loginForm.value.validate();
-    store.init(); // 初始化读取 sessionStorage
-    await store.login(form); // 登录成功
+
+    // ⚡ 这里不再调用 store.init()
+    await store.login(form); // 登录成功，store.user 会有值
     router.replace("/"); // 跳首页
   } catch (err: any) {
     ElMessage.error(err.message || "登录失败");

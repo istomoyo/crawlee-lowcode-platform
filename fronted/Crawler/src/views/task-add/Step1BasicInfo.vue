@@ -3,7 +3,6 @@ import { useRouter } from "vue-router";
 import { useTaskFormStore } from "@/stores/taskForm";
 import { ref } from "vue";
 import { previewScreenshotApi } from "@/api/task";
-import { ElMessage } from "element-plus";
 import { reactive } from "vue";
 
 const router = useRouter();
@@ -84,7 +83,7 @@ function nextStep() {
     </el-form>
 
     <div
-      class="flex-1 flex flex-col min-h-1/2 w-3/4 mx-auto shadow-2xl rounded-2xl overflow-hidden"
+      class="flex-1 min-h-1/2 w-3/4 mx-auto shadow-2xl rounded-2xl overflow-hidden"
     >
       <el-image
         v-if="previewBase64"
@@ -96,7 +95,7 @@ function nextStep() {
       />
       <div
         v-else
-        class="flex-1 flex items-center justify-center text-gray-400"
+        class="flex-1 flex items-center justify-center text-gray-400 h-full"
         v-loading="loading"
       >
         预览区域
@@ -104,3 +103,9 @@ function nextStep() {
     </div>
   </el-card>
 </template>
+<style>
+  .el-card__body{
+    display: flex;
+    flex-direction: column;
+  }
+</style>

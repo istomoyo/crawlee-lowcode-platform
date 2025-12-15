@@ -1,5 +1,5 @@
 <template>
-  <div class="p-6 h-full">
+  <div class="p-6 h-full flex flex-col">
     <div>
       <h2 class="sr-only">Steps</h2>
 
@@ -7,7 +7,10 @@
         <ol
           class="grid grid-cols-1 divide-x divide-gray-100 overflow-hidden rounded-lg border border-gray-100 text-sm text-gray-600 sm:grid-cols-3"
         >
-          <li class="flex items-center justify-center gap-2 p-4">
+          <li
+            class="flex items-center justify-center gap-2 p-4"
+            :class="active == 0 ? 'bg-gray-200' : ''"
+          >
             <svg
               class="size-7 shrink-0"
               xmlns="http://www.w3.org/2000/svg"
@@ -33,7 +36,8 @@
           </li>
 
           <li
-            class="relative flex items-center justify-center gap-2 bg-gray-50 p-4"
+            class="relative flex items-center justify-center gap-2 p-4"
+            :class="active == 1 ? 'bg-gray-200' : ''"
           >
             <span
               class="absolute top-1/2 -left-2 hidden size-4 -translate-y-1/2 rotate-45 border border-gray-100 sm:block ltr:border-s-0 ltr:border-b-0 ltr:bg-white rtl:border-e-0 rtl:border-t-0 rtl:bg-gray-50"
@@ -66,13 +70,18 @@
             </svg>
 
             <p class="leading-none">
-              <strong class="block font-medium text-gray-900"> Address </strong>
+              <strong class="block font-medium text-gray-900">
+                详细配置
+              </strong>
 
-              <small class="mt-1"> Where we sending it? </small>
+              <small class="mt-1"> 爬虫详细配置 </small>
             </p>
           </li>
 
-          <li class="flex items-center justify-center gap-2 p-4">
+          <li
+            class="flex items-center justify-center gap-2 p-4"
+            :class="active == 2 ? 'bg-gray-200' : ''"
+          >
             <svg
               class="size-7 shrink-0"
               xmlns="http://www.w3.org/2000/svg"
@@ -89,17 +98,24 @@
             </svg>
 
             <p class="leading-none">
-              <strong class="block font-medium text-gray-900"> Payment </strong>
+              <strong class="block font-medium text-gray-900">
+                数据映射
+              </strong>
 
-              <small class="mt-1"> Show us the money. </small>
+              <small class="mt-1"> 自定义爬虫数据 </small>
             </p>
           </li>
         </ol>
       </div>
     </div>
-    <keep-alive>
-      <router-view v-if="$route.meta.keepAlive" />
-    </keep-alive>
+    <!-- <router-view v-slot="{ Component }">
+      <keep-alive v-if="$route.meta.keepAlive && Component">
+        <component :is="Component" />
+      </keep-alive>
+
+      <component v-else-if="Component" :is="Component" />
+    </router-view> -->
+    <router-view></router-view>
   </div>
 </template>
 

@@ -108,7 +108,6 @@
 <script lang="ts" setup>
 import { useUserStore } from "@/stores/user";
 import { useRoute, RouterLink } from "vue-router";
-import { ref } from "vue";
 
 const user = useUserStore().user;
 const route = useRoute();

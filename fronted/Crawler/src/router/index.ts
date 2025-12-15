@@ -61,12 +61,32 @@ const router = createRouter({
 router.beforeEach(async (to) => {
   const store = useUserStore();
 
-  // 初始化 Pinia user
-  await store.init();
+  // 尝试从 session 恢复
+  if (!store.user) {
+    const saved = sessionStorage.getItem("user");
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        // ✅ 确认至少有 id 或 email
+        if (parsed && parsed.id) {
+          store.user = parsed;
+          return { path: "/login" };
+        }
+      } catch {
+        store.user = null;
+      }
+    }
+  }
 
   const isLogin = !!store.user;
-  if (to.path === "/login" && isLogin) return { path: "/" };
-  if (to.path !== "/login" && !isLogin) return { path: "/login" };
+
+  if (to.path === "/login") {
+    return isLogin ? { path: "/" } : true;
+  }
+
+  if (!isLogin) {
+    return { path: "/login" };
+  }
 
   return true;
 });

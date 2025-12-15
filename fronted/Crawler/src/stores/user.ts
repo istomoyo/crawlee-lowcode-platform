@@ -13,46 +13,59 @@ export interface User {
 export const useUserStore = defineStore("user", () => {
   const user = ref<User | null>(null);
   const loading = ref(false);
+  const checked = ref(false); // ⭐ 是否已经尝试过获取用户信息
 
-  // 初始化，优先从 sessionStorage 拿
   const init = async () => {
+    // 已初始化过，直接返回
+    if (checked.value) return user.value;
+
     const saved = sessionStorage.getItem("user");
     if (saved) {
       user.value = JSON.parse(saved);
+      checked.value = true;
       return user.value;
     }
-    // sessionStorage 没有就去请求 profile
+
+    // 没有缓存才去请求
     return await fetchUserInfo();
   };
 
-  // 请求 profile，依赖 cookie token
   const fetchUserInfo = async () => {
-    if (user.value) return user.value;
-    if (loading.value) return null; // 防止重复请求
+    if (loading.value) return user.value;
     loading.value = true;
+
     try {
       const res = await getUserInfoApi();
       user.value = res;
       sessionStorage.setItem("user", JSON.stringify(res));
       return res;
-    } catch {
+    } catch (e: any) {
+      // ⭐ 401：明确标记为“已检查且未登录”
       user.value = null;
       sessionStorage.removeItem("user");
       return null;
     } finally {
       loading.value = false;
+      checked.value = true; // ⭐ 无论成功失败，都标记
     }
   };
+  interface LoginResponse {
+    user: User;
+  }
+
+  interface LoginResponse {
+    user: User;
+  }
 
   const login = async (params: LoginParams) => {
-    const res = await loginApi(params);
-    if (!res?.data?.user) throw new Error("登录失败");
-    user.value = res.data.user;
-    sessionStorage.setItem("user", JSON.stringify(res.data.user));
+    const res = (await loginApi(params)) as unknown as LoginResponse;
+    user.value = res.user;
+    sessionStorage.setItem("user", JSON.stringify(user.value));
   };
 
   const logout = () => {
     user.value = null;
+    checked.value = false;
     sessionStorage.removeItem("user");
   };
 
