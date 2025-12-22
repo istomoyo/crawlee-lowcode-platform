@@ -1,4 +1,3 @@
-<!-- fronted\Crawler\src\views\task-add\Step2StructureSelect.vue -->
 <template>
   <el-card class="mt-6 p-4 flex flex-col h-full">
     <!-- loading -->
@@ -9,19 +8,8 @@
         fill="none"
         viewBox="0 0 24 24"
       >
-        <circle
-          class="opacity-25"
-          cx="12"
-          cy="12"
-          r="10"
-          stroke="currentColor"
-          stroke-width="4"
-        />
-        <path
-          class="opacity-75"
-          fill="currentColor"
-          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-        />
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
       </svg>
       <p class="mt-4">Loading...</p>
     </div>
@@ -44,24 +32,31 @@
             @click="selectAuto(index)"
           >
             <template #header>{{ item.xpath }}</template>
-
-            <img
-              :src="'data:image/png;base64,' + item.base64"
-              class="w-full h-40 object-contain"
-            />
+            <img :src="'data:image/png;base64,' + item.base64" class="w-full h-40 object-contain"/>
             <p class="text-sm mt-1">数量：{{ item.matchCount }}</p>
           </el-card>
         </div>
       </div>
 
-      <!-- 自定义 xpath -->
+      <!-- 自定义 XPath -->
       <div>
         <h3 class="font-bold mb-2">自定义 XPath</h3>
         <el-input
           v-model="customXpath"
           placeholder="//div[@class='item']"
           clearable
-          @focus="selectCustom"
+          @focus="selectCustomXpath"
+        />
+      </div>
+
+      <!-- 自定义 JSPath -->
+      <div>
+        <h3 class="font-bold mb-2">自定义 JSPath</h3>
+        <el-input
+          v-model="customJsPath"
+          placeholder="document.querySelector('#commentapp > bili-comments')..."
+          clearable
+          @focus="selectCustomJsPath"
         />
       </div>
     </div>
@@ -69,11 +64,7 @@
     <!-- 底部按钮 -->
     <div class="mt-4 flex justify-end gap-2">
       <el-button @click="prevStep">上一步</el-button>
-      <el-button
-        type="primary"
-        :disabled="!store.selectedItem"
-        @click="nextStep"
-      >
+      <el-button type="primary" :disabled="!store.selectedItem" @click="nextStep">
         下一步
       </el-button>
     </div>
@@ -100,8 +91,9 @@ const store = useTaskFormStore();
 const loading = ref(false);
 const listItems = reactive<ListItem[]>([]);
 const selectedIndex = ref(-1);
-const selectedType = ref<"auto" | "custom" | null>(null);
+const selectedType = ref<"auto" | "customXpath" | "customJsPath" | null>(null);
 const customXpath = ref("");
+const customJsPath = ref("");
 
 // 调用前弹出输入框，让用户填写目标长宽比和允许误差
 async function fetchListItems() {
@@ -124,7 +116,6 @@ async function fetchListItems() {
     const targetAspectRatio = parseFloat(ratioValues);
     if (isNaN(targetAspectRatio)) throw new Error("目标长宽比错误");
 
-    // 弹第二个输入框获取误差
     const { value: toleranceValue } = await ElMessageBox.prompt(
       '请输入允许误差',
       '列表识别设置',
@@ -164,25 +155,42 @@ function selectAuto(index: number) {
   store.selectedItem = {
     xpath: listItems[index]!.xpath,
     base64: listItems[index]!.base64,
+    jsPath: undefined,
   };
 }
 
-/* 选自定义 */
-function selectCustom() {
+/* 选自定义 XPath */
+function selectCustomXpath() {
   selectedIndex.value = -1;
-  selectedType.value = "custom";
+  selectedType.value = "customXpath";
+  store.selectedItem = {
+    xpath: customXpath.value || "",
+    base64: "",
+    jsPath: undefined,
+  };
 }
 
-watch(customXpath, (val) => {
-  if (!val) {
-    store.selectedItem = null;
-    return;
-  }
-  selectedType.value = "custom";
+/* 选自定义 JSPath */
+function selectCustomJsPath() {
+  selectedIndex.value = -1;
+  selectedType.value = "customJsPath";
   store.selectedItem = {
-    xpath: val,
+    xpath: "",
     base64: "",
+    jsPath: customJsPath.value || "",
   };
+}
+
+// watch 保持独立更新
+watch(customXpath, (val) => {
+  if (selectedType.value === "customXpath" && store.selectedItem) {
+    store.selectedItem.xpath = val;
+  }
+});
+watch(customJsPath, (val) => {
+  if (selectedType.value === "customJsPath" && store.selectedItem) {
+    store.selectedItem.jsPath = val;
+  }
 });
 
 function prevStep() {

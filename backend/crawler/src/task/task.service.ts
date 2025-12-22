@@ -20,6 +20,21 @@ interface Candidate {
   tagTypes: Set<string>;
   hasImage: boolean;
 }
+
+export interface NodeItem {
+  xpath: string;
+  text?: string;
+  tag?: string;
+  href?: string;
+  src?: string;
+}
+
+export interface ParseResult {
+  basePath: string;
+  texts: NodeItem[];
+  images: NodeItem[];
+  links: NodeItem[];
+}
 @Injectable()
 export class TaskService {
   async capturePreviewScreenshot(url: string): Promise<string> {
@@ -52,9 +67,6 @@ export class TaskService {
   /**
    * 返回页面最有代表性的前 4 个元素，供预览
    */
-  /**
-   * 返回页面最有代表性的前 N 个列表 XPath
-   */
   async captureListItemsByXpath(
     url: string,
     maxItems = 3,
@@ -78,6 +90,16 @@ export class TaskService {
 
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
       await page.waitForTimeout(2000);
+
+      // 触发懒加载：分段滚动到一定距离，控制次数与延时
+      const scrollStep = 1000;
+      const maxScrollDistance = 8000;
+      let scrolled = 0;
+      while (scrolled < maxScrollDistance) {
+        await page.mouse.wheel(0, scrollStep);
+        scrolled += scrollStep;
+        await page.waitForTimeout(1000);
+      }
 
       const elements = await page.$$('body *');
 
@@ -223,7 +245,6 @@ export class TaskService {
 
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
-      // ⭐ 可选：等待异步渲染
       if (waitSelector) {
         await page
           .waitForSelector(waitSelector, { timeout: 5000 })
@@ -246,6 +267,21 @@ export class TaskService {
           return './/' + parts.join('/');
         }
 
+        function isCssLike(text: string) {
+          const t = text.trim();
+          if (!t) return false;
+          const hasBraces = /{[^}]*}/.test(t);
+          const hasCssProp =
+            /(color|font|margin|padding|display|position|width|height|background|border)\s*:/i.test(
+              t,
+            );
+          const startsSelector = /^[.#][\w-]+\s*[{:]/.test(t);
+          const manySemicolons = t.split(';').length >= 3;
+          return (
+            hasBraces || (hasCssProp && (startsSelector || manySemicolons))
+          );
+        }
+
         const iterator = document.evaluate(
           baseXpath,
           document,
@@ -265,7 +301,7 @@ export class TaskService {
 
           // 节点自身文本
           const selfText = el.textContent?.trim();
-          if (selfText) {
+          if (selfText && !isCssLike(selfText)) {
             texts.push({
               xpath:
                 el.children.length === 0
@@ -298,7 +334,7 @@ export class TaskService {
             });
           }
 
-          // 遍历子节点（仅当有子节点时）
+          // 遍历子节点
           if (el.children.length > 0) {
             el.querySelectorAll('*').forEach((child) => {
               const tag = child.tagName.toLowerCase();
@@ -325,7 +361,7 @@ export class TaskService {
 
               if (child.children.length === 0) {
                 const t = child.textContent?.trim();
-                if (t && t.length >= 1) {
+                if (t && t.length >= 1 && !isCssLike(t)) {
                   texts.push({
                     xpath: getRelativeXPath(el!, child),
                     text: t,
@@ -336,26 +372,28 @@ export class TaskService {
             });
           }
 
-          if (texts.length > 0 || images.length > 0 || links.length > 0) {
-            return {
-              baseXpath:
-                el.children.length === 0
-                  ? baseXpath
-                  : getRelativeXPath(document.body, el),
-              texts,
-              images,
-              links,
-            };
+          // ⭐ 如果目标元素不是 img，则 texts 必须长度不为0
+          if (tagName !== 'img' && texts.length === 0) {
+            el = iterator.iterateNext() as HTMLElement | null;
+            continue;
           }
 
-          el = iterator.iterateNext() as HTMLElement | null;
+          // 返回第一个符合条件的元素
+          return {
+            baseXpath:
+              el.children.length === 0
+                ? baseXpath
+                : getRelativeXPath(document.body, el),
+            texts,
+            images,
+            links,
+          };
         }
 
         return null;
       }, xpath);
 
       if (!result) return { count: 0, items: null };
-
       return { count: 1, items: result };
     } catch (e) {
       console.error('XPath 解析失败', e);
@@ -508,6 +546,154 @@ export class TaskService {
       };
     } catch (e) {
       throw new InternalServerErrorException('XPath 解析失败');
+    } finally {
+      if (browser) await browser.close();
+    }
+  }
+
+  // task.service.ts
+  async parseByJsPath(
+    url: string,
+    jsPath: string,
+    waitSelector?: string,
+  ): Promise<{ count: number; items: ParseResult | null }> {
+    let browser: playwright.Browser | null = null;
+
+    try {
+      browser = await playwright.chromium.launch({ headless: false });
+      const page = await browser.newPage();
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+
+      // 可选等待选择器
+      if (waitSelector) {
+        await page
+          .waitForSelector(waitSelector, { timeout: 10000 })
+          .catch(() => null);
+      }
+
+      // 滚动触发懒加载
+      await page.evaluate(async () => {
+        const distance = 2000;
+        const delay = 2000;
+        const maxScroll = 10000;
+        let total = 0;
+
+        while (total < maxScroll) {
+          window.scrollBy(0, distance);
+          total += distance;
+          await new Promise((res) => setTimeout(res, delay));
+        }
+      });
+
+      // JSPath 解析，分解每层 CSS selector
+      const selectorRegex = /document\.querySelector\(["'](.+?)["']\)/g;
+      const selectors: string[] = [];
+      let match: RegExpExecArray | null;
+      while ((match = selectorRegex.exec(jsPath)) !== null) {
+        selectors.push(match[1]);
+      }
+      if (!selectors.length) return { count: 0, items: null };
+
+      // 第 0 层 host
+      let elementHandle: playwright.ElementHandle<HTMLElement> | null =
+        (await page.waitForSelector(selectors[0], {
+          timeout: 10000,
+        })) as playwright.ElementHandle<HTMLElement> | null;
+
+      // 逐层 shadowRoot 查询
+      for (let i = 1; i < selectors.length; i++) {
+        if (!elementHandle) break;
+        elementHandle = (await elementHandle.evaluateHandle(
+          (el, sel) =>
+            (el as HTMLElement).shadowRoot?.querySelector(sel) ?? null,
+          selectors[i],
+        )) as playwright.ElementHandle<HTMLElement> | null;
+      }
+
+      if (!elementHandle) return { count: 0, items: null };
+
+      // 提取文本 / 图片 / 链接
+      const result = await elementHandle.evaluate((root: HTMLElement) => {
+        const texts: NodeItem[] = [];
+        const images: NodeItem[] = [];
+        const links: NodeItem[] = [];
+
+        function getRelativeXPath(base: Element, el: Element): string {
+          const parts: string[] = [];
+          while (el && el !== base) {
+            let index = 1;
+            let sib = el.previousElementSibling;
+            while (sib) {
+              if (sib.tagName === el.tagName) index++;
+              sib = sib.previousElementSibling;
+            }
+            parts.unshift(`${el.tagName.toLowerCase()}[${index}]`);
+            el = el.parentElement!;
+          }
+          return './/' + parts.join('/');
+        }
+
+        function isCssLike(text: string) {
+          const t = text.trim();
+          if (!t) return false;
+          const hasBraces = /{[^}]*}/.test(t);
+          const hasCssProp =
+            /(color|font|margin|padding|display|position|width|height|background|border)\s*:/i.test(
+              t,
+            );
+          const startsSelector = /^[.#][\w-]+\s*[{:]/.test(t);
+          const manySemicolons = t.split(';').length >= 3;
+          return (
+            hasBraces || (hasCssProp && (startsSelector || manySemicolons))
+          );
+        }
+
+        function traverse(node: HTMLElement) {
+          const tag = node.tagName.toLowerCase();
+          const ignoreTags = ['script', 'style', 'noscript', 'template'];
+          if (ignoreTags.includes(tag)) return;
+
+          const t = node.textContent?.trim();
+          if (t && !isCssLike(t))
+            texts.push({
+              xpath: getRelativeXPath(document.body, node),
+              text: t,
+              tag,
+            });
+          if (tag === 'img' && (node as HTMLImageElement).src)
+            images.push({
+              xpath: getRelativeXPath(document.body, node),
+              src: (node as HTMLImageElement).src,
+            });
+          if (tag === 'a' && (node as HTMLAnchorElement).href)
+            links.push({
+              xpath: getRelativeXPath(document.body, node),
+              href: (node as HTMLAnchorElement).href,
+            });
+
+          // 遍历 children
+          for (const c of Array.from(node.children)) traverse(c as HTMLElement);
+
+          // 遍历 shadowRoot
+          const shadowRoot = (node as HTMLElement).shadowRoot;
+          if (shadowRoot) {
+            for (const c of Array.from(shadowRoot.children))
+              traverse(c as HTMLElement);
+          }
+        }
+
+        traverse(root);
+
+        if (texts.length === 0 && images.length === 0 && links.length === 0)
+          return null;
+        return { basePath: '', texts, images, links };
+      });
+
+      if (!result) return { count: 0, items: null };
+      return { count: 1, items: result };
+    } catch (e) {
+      console.error('JSPath 解析失败', e);
+      throw new InternalServerErrorException('JSPath 解析失败');
     } finally {
       if (browser) await browser.close();
     }

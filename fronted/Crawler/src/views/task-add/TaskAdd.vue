@@ -5,7 +5,7 @@
 
       <div>
         <ol
-          class="grid grid-cols-1 divide-x divide-gray-100 overflow-hidden rounded-lg border border-gray-100 text-sm text-gray-600 sm:grid-cols-3"
+          class="grid grid-cols-1 divide-x divide-gray-100 overflow-hidden rounded-lg border border-gray-100 text-sm text-gray-600 sm:grid-cols-4"
         >
           <li
             class="flex items-center justify-center gap-2 p-4"
@@ -105,6 +105,34 @@
               <small class="mt-1"> 自定义爬虫数据 </small>
             </p>
           </li>
+
+          <li
+            class="flex items-center justify-center gap-2 p-4"
+            :class="active == 3 ? 'bg-gray-200' : ''"
+          >
+            <svg
+              class="size-7 shrink-0"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M9 17v-2a2 2 0 012-2h2a2 2 0 012 2v2m-2-6a2 2 0 100-4 2 2 0 000 4zm-6 8h12a2 2 0 002-2V9a2 2 0 00-2-2h-3.586a1 1 0 01-.707-.293l-1.828-1.828A1 1 0 0010.586 4H6a2 2 0 00-2 2v11a2 2 0 002 2z"
+              ></path>
+            </svg>
+
+            <p class="leading-none">
+              <strong class="block font-medium text-gray-900">
+                配置预览
+              </strong>
+
+              <small class="mt-1"> 导出 JSON 配置 </small>
+            </p>
+          </li>
         </ol>
       </div>
     </div>
@@ -128,6 +156,7 @@ const active = computed(() => {
   if (route.path.includes("basic")) return 0;
   if (route.path.includes("structure")) return 1;
   if (route.path.includes("mapping")) return 2;
+  if (route.path.includes("preview")) return 3;
   return 0;
 });
 </script>

@@ -44,8 +44,35 @@ export interface UserInfo {
   email: string;
   username: string;
   role: string;
+  avatar?: string;
 }
 //获取用户详细信息
 export function getUserInfoApi(): Promise<UserInfo> {
   return request.get("/api/user/profile");
+}
+
+// 更新基础信息（目前只支持用户名）
+export function updateUserProfileApi(data: { username: string }) {
+  return request.patch("/api/user/profile", data);
+}
+
+// 上传头像
+export function uploadAvatarApi(file: File): Promise<UserInfo> {
+  const formData = new FormData();
+  formData.append("file", file);
+  return request.post("/api/user/avatar", formData);
+}
+
+// 修改密码
+export function changePasswordApi(data: {
+  oldPassword: string;
+  newPassword: string;
+  confirmPassword: string;
+}) {
+  return request.patch("/api/user/password", data);
+}
+
+// 登出
+export function logoutApi() {
+  return request.post("/api/user/logout");
 }

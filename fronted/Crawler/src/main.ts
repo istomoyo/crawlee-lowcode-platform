@@ -6,6 +6,7 @@ import "element-plus/dist/index.css";
 import "animate.css";
 import router from "./router";
 import { useUserStore } from "@/stores/user";
+import 'cropperjs/dist/cropper.css'
 
 import { createPinia } from "pinia";
 const app = createApp(App);

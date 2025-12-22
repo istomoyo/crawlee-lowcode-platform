@@ -6,6 +6,7 @@ import type {
 } from "axios";
 import { ElMessage } from "element-plus";
 import router from "@/router";
+import { useUserStore } from "@/stores/user";
 // 创建 axios 实例
 const request: AxiosInstance = axios.create({
   baseURL: "",
@@ -36,10 +37,21 @@ request.interceptors.response.use(
   (error) => {
     if (error.response) {
       const { code, message } = error.response.data;
-      if (code === 401) {
+      const url = error.config?.url || "";
+      
+      // 如果是登出接口返回 401，不需要再次调用 logout（避免循环）
+      if (code === 401 && !url.includes("/logout")) {
+        // 401 未授权，清理所有用户状态
+        const userStore = useUserStore();
+        // 只清理本地状态，不调用 API（避免循环）
+        userStore.user = null;
+        userStore.checked = false;
+        sessionStorage.removeItem("user");
         ElMessage.error(message || "未授权，请登录");
-        // ⚡ 不直接调用 store.user
         router.replace("/login");
+      } else if (code === 401) {
+        // 登出接口的 401，只显示错误信息
+        ElMessage.error(message || "未授权，请登录");
       } else {
         ElMessage.error(message || "请求失败");
       }

@@ -39,6 +39,19 @@ class ListPreviewDto {
   tolerance?: number; // 新增
 }
 
+class JsPathParseDto {
+  @IsUrl()
+  @IsString()
+  url: string;
+
+  @IsString()
+  jsPath: string;
+
+  @IsOptional()
+  @IsString()
+  waitSelector?: string;
+}
+
 @UseGuards(JwtAuthGuard)
 @Controller('task')
 export class TaskController {
@@ -81,39 +94,9 @@ export class TaskController {
     const { url, xpath } = body;
     return this.taskService.parseByXpathAll(url, xpath);
   }
-
-  // 图片代理接口
-  @Get('proxy-image')
-  async proxyImage(
-    @Query('url') url: string,
-    @Query('referer') referer: string,
-  ) {
-    if (!url) {
-      throw new HttpException('Missing url', HttpStatus.BAD_REQUEST);
-    }
-
-    try {
-      const response = await fetch(url, {
-        headers: {
-          Referer: referer || 'https://www.bilibili.com/', // 前端传的 referer
-          'User-Agent': 'Mozilla/5.0',
-        },
-      });
-
-      if (!response.ok) {
-        throw new HttpException('Failed to fetch image', response.status);
-      }
-
-      const buffer = Buffer.from(await response.arrayBuffer());
-      const contentType = response.headers.get('content-type') || 'image/jpeg';
-
-      return {
-        contentType,
-        base64: buffer.toString('base64'),
-      };
-    } catch (err) {
-      console.error(err);
-      throw new HttpException('Proxy failed', HttpStatus.INTERNAL_SERVER_ERROR);
-    }
+  @Post('jspath-parse')
+  async parseByJsPath(@Body() body: JsPathParseDto) {
+    const { url, jsPath, waitSelector } = body;
+    return this.taskService.parseByJsPath(url, jsPath, waitSelector);
   }
 }

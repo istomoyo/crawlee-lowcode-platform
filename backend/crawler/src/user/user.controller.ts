@@ -59,6 +59,14 @@ export class UserController {
     return this.userService.login(dto, res);
   }
 
+  // 登出
+  @UseGuards(JwtAuthGuard)
+  @Post('logout')
+  @SuccessMessage('登出成功')
+  logout(@Req() req) {
+    return this.userService.logout(req.user!.id);
+  }
+
   @UseGuards(JwtAuthGuard)
   @Get('profile')
   @SuccessMessage('获取用户信息成功')

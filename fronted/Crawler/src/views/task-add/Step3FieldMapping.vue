@@ -2,79 +2,17 @@
   <el-card class="h-full flex flex-col p-4">
     <h3 class="font-bold mb-3">字段结构映射（表格版）</h3>
 
-    <!-- 表格 -->
-    <el-table
-      :data="store.treeData"
-      style="width: 100%"
-      row-key="id"
-      stripe
-      border
-      :tree-props="{ children: 'children', hasChildren: 'hasChildren' }"
-    >
-      <!-- 属性名 -->
-      <el-table-column prop="label" label="属性名" width="200" />
-
-      <!-- 类型 -->
-      <el-table-column label="类型" width="80">
-        <template #default="{ row }">
-          <el-tag class="tag-item" type="primary">
-            {{ row.type }}
-          </el-tag>
-        </template>
-      </el-table-column>
-
-      <!-- XPath -->
-      <el-table-column label="XPath">
-        <template #default="{ row }">{{ row.selector }}</template>
-      </el-table-column>
-
-      <!-- 值 -->
-      <el-table-column label="值">
-        <template #default="{ row }">
-          <template v-if="row.type === 'image'">
-            <img
-              v-if="row.imgSrc"
-              :src="row.imgSrc"
-              alt="img"
-              style="max-height: 60px; max-width: 120px"
-            />
-            <span v-else>{{ row.samples?.[0] ?? "" }}</span>
-          </template>
-          <template v-else>{{ row.samples?.[0] ?? "" }}</template>
-        </template>
-      </el-table-column>
-
-      <!-- 操作 -->
-      <el-table-column label="操作" width="250">
-        <template #default="{ row }">
-          <el-button
-            size="small"
-            type="primary"
-            text
-            @click="openEditDialog(row)"
-          >
-            编辑
-          </el-button>
-          <el-button
-            size="small"
-            type="danger"
-            text
-            @click="removeNode(row.id)"
-          >
-            删除
-          </el-button>
-          <el-button
-            v-if="row.type === 'link'"
-            size="small"
-            type="success"
-            text
-            @click="openAddChildDialog(row)"
-          >
-            添加子节点
-          </el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+    <div v-if="tableLoading" class="flex items-center justify-center py-10">
+      <el-spinner />
+      <span class="ml-2 text-gray-500">加载中...</span>
+    </div>
+    <FieldNodeList
+      v-else
+      :nodes="rootNodes"
+      @edit="openEditDialog"
+      @remove="removeNode"
+      @add-child="openAddChildDialog"
+    />
 
     <!-- 添加新节点 -->
     <div class="mt-4 flex gap-2">
@@ -95,7 +33,18 @@
           <el-input v-model="editNode.label" />
         </el-form-item>
         <el-form-item label="XPath">
-          <el-input v-model="editNode.selector" />
+          <el-input
+            v-model="editNode.selector"
+            @input="editNode.jsPath = ''"
+            placeholder="//div[@class='item']"
+          />
+        </el-form-item>
+        <el-form-item label="JSPath">
+          <el-input
+            v-model="editNode.jsPath"
+            @input="editNode.selector = ''"
+            placeholder="document.querySelector('...')"
+          />
         </el-form-item>
       </el-form>
       <span slot="footer" class="dialog-footer">
@@ -146,6 +95,16 @@
               clearable
             />
           </div>
+
+          <!-- 自定义 JSPath -->
+          <div class="mt-4">
+            <h4 class="font-bold mb-2">自定义 JSPath</h4>
+            <el-input
+              v-model="customJsPath"
+              placeholder="document.querySelector('...').shadowRoot.querySelector('...')"
+              clearable
+            />
+          </div>
         </div>
       </template>
 
@@ -153,27 +112,34 @@
         <el-button @click="closeAddChildDialog">取消</el-button>
         <el-button
           type="primary"
-          :disabled="!selectedXpath"
+          :disabled="!selectedXpath && !customJsPath"
           @click="confirmAddChildNode"
           >确认</el-button
         >
       </template>
     </el-dialog>
+    <div class="mt-4 flex justify-end gap-2">
+      <el-button @click="goPrev">上一步</el-button>
+      <el-button type="primary" @click="goNext">下一步</el-button>
+    </div>
   </el-card>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, reactive, watch } from "vue";
+import { ref, onMounted, reactive, watch, computed } from "vue";
+import { useRouter } from "vue-router";
 import { useTaskFormStore } from "@/stores/taskForm";
-import { xpathParseApi } from "@/api/task";
+import { xpathParseApi, jsPathParseApi } from "@/api/task";
 
 import { listPreviewApi } from "@/api/task";
 import { ElMessageBox, ElMessage } from "element-plus";
+import FieldNodeList from "./components/FieldNodeList.vue";
 interface TreeNode {
   id: number;
   label: string;
   type: "field" | "image" | "link";
-  selector: string;
+  selector?: string;
+  jsPath?: string;
   samples?: string[];
   children?: TreeNode[];
   hasChildren?: boolean;
@@ -182,6 +148,8 @@ interface TreeNode {
 
 const store = useTaskFormStore();
 let idSeed = 1;
+const rootNodes = computed<TreeNode[]>(() => store.treeData as unknown as TreeNode[]);
+const router = useRouter();
 
 // 编辑弹框
 const editDialogVisible = ref(false);
@@ -203,7 +171,9 @@ const listItems = reactive<ListItem[]>([]);
 const selectedIndex = ref(-1);
 const selectedXpath = ref<string>("");
 const customXpath = ref("");
+const customJsPath = ref("");
 const loading = ref(false);
+const tableLoading = ref(true);
 const currentObjectUrl = ref("");
 // 点击“添加子节点”时调用
 async function openAddChildDialog(node: any) {
@@ -216,6 +186,7 @@ async function openAddChildDialog(node: any) {
   selectedIndex.value = -1;
   selectedXpath.value = "";
   customXpath.value = "";
+  customJsPath.value = "";
 
   // 弹窗让用户输入目标长宽比和误差
   try {
@@ -272,6 +243,15 @@ watch(customXpath, (val) => {
     selectedXpath.value = listItems[selectedIndex.value]?.xpath || "";
 });
 
+// 自定义 JSPath 与 XPath 互斥优先：输入 JSPath 时清空 XPath 选择
+watch(customJsPath, (val) => {
+  if (val) {
+    selectedXpath.value = "";
+    selectedIndex.value = -1;
+    customXpath.value = "";
+  }
+});
+
 // 关闭弹窗
 function closeAddChildDialog() {
   addChildDialogVisible.value = false;
@@ -280,52 +260,67 @@ function closeAddChildDialog() {
   selectedIndex.value = -1;
   selectedXpath.value = "";
   customXpath.value = "";
+  customJsPath.value = "";
 }
 
 // 确认添加子节点
 async function confirmAddChildNode() {
-  if (!selectedXpath.value || !addChildParent.value) return;
+  const useJsPath = !!customJsPath.value;
+  const validPath = useJsPath ? customJsPath.value : selectedXpath.value;
+  if (!validPath || !addChildParent.value) return;
 
   try {
-    const res = await xpathParseApi({
-      url: currentObjectUrl.value,
-      xpath: selectedXpath.value,
-    });
+    const res: any = useJsPath
+      ? await jsPathParseApi({
+          url: currentObjectUrl.value,
+          jsPath: customJsPath.value,
+        })
+      : await xpathParseApi({
+          url: currentObjectUrl.value,
+          xpath: selectedXpath.value,
+        });
     console.log("object :>> ", {
       url: currentObjectUrl.value,
       xpath: selectedXpath.value,
+      jsPath: customJsPath.value,
     });
     console.log("res :>> ", res);
     // 将返回结果渲染为子节点
     const children: any[] = [];
 
-    res.items.texts?.forEach((t: any) => {
+    const items = (res as any)?.items;
+    if (!items) throw new Error("解析结果为空");
+
+    items.texts?.forEach((t: any) => {
       children.push({
         id: Date.now() + Math.random(),
         type: "field",
         label: t.text,
-        selector: t.xpath,
+        selector: useJsPath ? "" : t.xpath,
+        jsPath: useJsPath ? customJsPath.value : "",
         samples: [t.text],
       });
     });
 
-    res.items.images?.forEach((i: any) => {
+    items.images?.forEach((i: any) => {
       children.push({
         id: Date.now() + Math.random(),
         type: "image",
         label: i.src,
-        selector: i.xpath,
+        selector: useJsPath ? "" : i.xpath,
+        jsPath: useJsPath ? customJsPath.value : "",
         imgSrc: i.src,
         samples: [i.src],
       });
     });
 
-    res.items.links?.forEach((l: any) => {
+    items.links?.forEach((l: any) => {
       children.push({
         id: Date.now() + Math.random(),
         type: "link",
         label: l.href,
-        selector: l.xpath,
+        selector: useJsPath ? "" : l.xpath,
+        jsPath: useJsPath ? customJsPath.value : "",
         samples: [l.href],
         children: [],
         hasChildren: true,
@@ -343,16 +338,31 @@ async function confirmAddChildNode() {
 
 // 初始化树
 async function initTree() {
-  if (!store.form.url || !store.selectedItem?.xpath) return;
+  if (!store.form.url) {
+    tableLoading.value = false;
+    return;
+  }
+  const hasXpath = !!store.selectedItem?.xpath;
+  const hasJsPath = !!store.selectedItem?.jsPath;
+  if (!hasXpath && !hasJsPath) {
+    tableLoading.value = false;
+    return;
+  }
 
   try {
-    const res = await xpathParseApi({
-      url: store.form.url,
-      xpath: store.selectedItem.xpath,
-    });
+    const res: any = hasJsPath
+      ? await jsPathParseApi({
+          url: store.form.url,
+          jsPath: store.selectedItem?.jsPath || "",
+        })
+      : await xpathParseApi({
+          url: store.form.url,
+          xpath: store.selectedItem?.xpath || "",
+        });
     console.log("object :>> ", {
       url: store.form.url,
-      xpath: store.selectedItem.xpath,
+      xpath: store.selectedItem?.xpath,
+      jsPath: store.selectedItem?.jsPath,
     });
     console.log("res--init :>> ", res);
     store.treeData.length = 0;
@@ -361,22 +371,35 @@ async function initTree() {
 
     // 文本
     item.texts?.forEach(({ text, xpath }: any) => {
-      store.treeData.push(createNode("field", text, xpath, [text]));
+      store.treeData.push(
+        createNode("field", text, hasJsPath ? "" : xpath, [text], false, hasJsPath ? store.selectedItem?.jsPath : undefined)
+      );
     });
 
     // 图片
     item.images?.forEach(({ src, xpath }: any) => {
-      const node = createNode("image", src, xpath, [src]);
+      const node = createNode(
+        "image",
+        src,
+        hasJsPath ? "" : xpath,
+        [src],
+        false,
+        hasJsPath ? store.selectedItem?.jsPath : undefined
+      );
       // node.imgSrc = src // 图片直接显示 src
       store.treeData.push(node);
     });
 
     // 链接
     item.links?.forEach(({ href, xpath }: any) => {
-      store.treeData.push(createNode("link", href, xpath, [href], true));
+      store.treeData.push(
+        createNode("link", href, hasJsPath ? "" : xpath, [href], true, hasJsPath ? store.selectedItem?.jsPath : undefined)
+      );
     });
   } catch (e) {
     console.error("XPath解析失败", e);
+  } finally {
+    tableLoading.value = false;
   }
 }
 
@@ -386,13 +409,15 @@ function createNode(
   label: string,
   selector: string,
   samples: string[] = [],
-  hasChildren = false
+  hasChildren = false,
+  jsPath?: string
 ): TreeNode {
   return {
     id: idSeed++,
     type,
     label,
     selector,
+    jsPath,
     samples,
     hasChildren,
     children: type === "link" ? [] : undefined,
@@ -427,6 +452,13 @@ function removeNode(id: number) {
 function addNewNode() {
   const node = createNode(newNodeType.value, "新属性", ".//text()", [""]);
   store.treeData.push(node);
+}
+
+function goPrev() {
+  router.push("/crawleer/task-add/structure");
+}
+function goNext() {
+  router.push("/crawleer/task-add/preview");
 }
 
 onMounted(initTree);

@@ -42,7 +42,18 @@ const routes: Array<RouteRecordRaw> = [
             component: () => import("@/views/task-add/Step3FieldMapping.vue"),
             meta: { keepAlive: true },
           },
+          {
+            path: "preview",
+            component: () => import("@/views/task-add/Step4Preview.vue"),
+            meta: { keepAlive: true },
+          },
         ],
+      },
+      {
+        path: "account/profile",
+        name: "user-profile",
+        component: () => import("@/views/UserProfile.vue"),
+        meta: { keepAlive: true },
       },
     ],
   },
@@ -61,29 +72,20 @@ const router = createRouter({
 router.beforeEach(async (to) => {
   const store = useUserStore();
 
-  // 尝试从 session 恢复
-  if (!store.user) {
-    const saved = sessionStorage.getItem("user");
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        // ✅ 确认至少有 id 或 email
-        if (parsed && parsed.id) {
-          store.user = parsed;
-          return { path: "/login" };
-        }
-      } catch {
-        store.user = null;
-      }
-    }
+  // 如果用户状态未初始化，尝试初始化
+  if (!store.checked) {
+    await store.init();
   }
-
+  console.log("store.user :>> ", store.user);
   const isLogin = !!store.user;
 
+  // 如果访问登录页
   if (to.path === "/login") {
+    // 如果已登录，跳转到首页
     return isLogin ? { path: "/" } : true;
   }
 
+  // 如果未登录，跳转到登录页
   if (!isLogin) {
     return { path: "/login" };
   }

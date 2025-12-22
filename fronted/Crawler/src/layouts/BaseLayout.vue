@@ -71,6 +71,14 @@
                       <span :class="child.class" class="text-xl"></span>
                       {{ child.label }}
                     </RouterLink>
+                    <button
+                      v-else
+                      @click="handleLogout"
+                      class="w-full text-left rounded-lg px-4 py-2 text-sm font-medium hover:bg-gray-100 flex items-center gap-2 text-gray-500"
+                    >
+                      <span class="text-xl">🚪</span>
+                      {{ child.label }}
+                    </button>
                   </li>
                 </ul>
               </details>
@@ -79,24 +87,24 @@
         </ul>
       </div>
 
-      <!-- 头像区域保持原样 -->
+      <!-- 头像区域 -->
       <div class="sticky inset-x-0 bottom-0 border-t border-gray-100">
-        <a
-          href="#"
-          class="flex items-center gap-2 bg-white p-4 hover:bg-gray-50"
+        <RouterLink
+          to="/account/profile"
+          class="flex items-center gap-2 bg-white p-4 hover:bg-gray-50 cursor-pointer"
         >
-          <el-avatar :size="50" :src="user?.avatar">{{
-            user?.avatar ? "" : user?.username
+          <el-avatar :size="50" :src="avatarUrl">{{
+            avatarUrl ? "" : userStore.user?.username
           }}</el-avatar>
           <div>
             <p class="text-xs">
               <strong class="block font-extrabold font-mono">{{
-                user?.username
+                userStore.user?.username
               }}</strong>
-              <span>{{ user?.email }}</span>
+              <span>{{ userStore.user?.email }}</span>
             </p>
           </div>
-        </a>
+        </RouterLink>
       </div>
     </div>
     <div class="w-full h-screen min-w-0">
@@ -107,10 +115,19 @@
 
 <script lang="ts" setup>
 import { useUserStore } from "@/stores/user";
-import { useRoute, RouterLink } from "vue-router";
+import { useRoute, RouterLink, useRouter } from "vue-router";
+import { onMounted, computed } from "vue";
+import { getAvatarUrl } from "@/utils/avatar";
+import { ElMessageBox } from "element-plus";
 
-const user = useUserStore().user;
+const userStore = useUserStore();
 const route = useRoute();
+const router = useRouter();
+
+// 计算完整的头像 URL
+const avatarUrl = computed(() => {
+  return getAvatarUrl(userStore.user?.avatar);
+});
 
 // 菜单项类型
 interface MenuItem {
@@ -138,19 +155,9 @@ const menu: MenuItem[] = [
     ],
   },
   {
-    label: "Teams",
+    label: "账户",
     children: [
-      { label: "Banned Users", path: "/teams/banned" },
-      { label: "Calendar", path: "/teams/calendar" },
-    ],
-  },
-  { label: "Billing", path: "/billing" },
-  { label: "Invoices", path: "/invoices" },
-  {
-    label: "Account",
-    children: [
-      { label: "Details", path: "/account/details" },
-      { label: "Security", path: "/account/security" },
+      { label: "个人信息", path: "/account/profile" },
       { label: "Logout" },
     ],
   },
@@ -158,4 +165,30 @@ const menu: MenuItem[] = [
 
 // 判断当前路由是否匹配
 const isActive = (path?: string) => path && route.path.startsWith(path);
+
+// 登出处理
+async function handleLogout() {
+  try {
+    await ElMessageBox.confirm("确定要退出登录吗？", "提示", {
+      confirmButtonText: "确定",
+      cancelButtonText: "取消",
+      type: "warning",
+    });
+
+    // 调用 store 的 logout 方法（会调用 API 并清理本地状态）
+    await userStore.logout();
+
+    // 跳转到登录页
+    router.push("/login");
+  } catch (error: any) {
+    // 用户取消或登出失败
+    if (error !== "cancel") {
+      console.error("登出失败:", error);
+    }
+  }
+}
+
+onMounted(() => {
+  console.log("user.avatar :>> ", userStore.user?.avatar);
+});
 </script>

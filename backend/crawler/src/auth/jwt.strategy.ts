@@ -22,6 +22,12 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     const { id, loginToken } = payload;
     const latest = await this.redis.get(`user:token:${id}`);
 
+    // 如果 Redis 中没有 token，说明用户已登出
+    if (latest === null) {
+      throw new UnauthorizedException('未授权，请登录');
+    }
+
+    // 如果 token 不匹配，说明用户在另一设备登录
     if (latest !== loginToken) {
       throw new UnauthorizedException('你的账号已在另一设备登录');
     }

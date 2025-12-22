@@ -1,6 +1,11 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import { getUserInfoApi, loginApi, type LoginParams } from "@/api/user";
+import {
+  getUserInfoApi,
+  loginApi,
+  logoutApi,
+  type LoginParams,
+} from "@/api/user";
 
 export interface User {
   id: number;
@@ -16,17 +21,15 @@ export const useUserStore = defineStore("user", () => {
   const checked = ref(false); // ⭐ 是否已经尝试过获取用户信息
 
   const init = async () => {
-    // 已初始化过，直接返回
     if (checked.value) return user.value;
-
-    const saved = sessionStorage.getItem("user");
-    if (saved) {
-      user.value = JSON.parse(saved);
+    // ⭐ 先读取 sessionStorage
+    const userStr = sessionStorage.getItem("user");
+    if (userStr) {
+      user.value = JSON.parse(userStr);
       checked.value = true;
       return user.value;
     }
-
-    // 没有缓存才去请求
+    // 没有再查API
     return await fetchUserInfo();
   };
 
@@ -63,11 +66,19 @@ export const useUserStore = defineStore("user", () => {
     sessionStorage.setItem("user", JSON.stringify(user.value));
   };
 
-  const logout = () => {
-    user.value = null;
-    checked.value = false;
-    sessionStorage.removeItem("user");
+  const logout = async () => {
+    try {
+      await logoutApi();
+    } catch (error) {
+      // 即使 API 调用失败，也继续执行本地清理
+      console.error("登出 API 调用失败:", error);
+    } finally {
+      // 清理本地状态
+      user.value = null;
+      checked.value = false;
+      sessionStorage.removeItem("user");
+    }
   };
 
-  return { user, init, fetchUserInfo, login, logout };
+  return { user, init, fetchUserInfo, login, logout,checked };
 });

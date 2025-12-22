@@ -63,6 +63,7 @@ export function xpathParseApi(data: {
   return request.post("/api/task/xpath-parse", data);
 }
 
+
 // =======================
 // XPath 匹配结果（只返回数量 + 文本样例）
 // =======================
@@ -76,4 +77,13 @@ export function xpathMatchApi(data: {
   xpath: string;
 }): Promise<XpathMatchRes> {
   return request.post("/api/task/xpath-match", data);
+}
+
+export function jsPathParseApi(data:{
+  url: string;
+  jsPath: string;
+}): Promise<XpathMatchRes> {
+  // TODO
+    return request.post("/api/task/jspath-parse", data);
+
 }
