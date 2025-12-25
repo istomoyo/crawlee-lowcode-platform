@@ -214,7 +214,7 @@ function onFileChange(e: Event) {
 
     cropper = new Cropper(cropperImg.value, {
       aspectRatio: 1,
-      viewMode: 3,
+      viewMode: 1,
       autoCropArea: 0.8,
       background: false,
       responsive: true,

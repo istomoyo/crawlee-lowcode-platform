@@ -18,9 +18,7 @@ import { RolesGuard } from './roles.guard';
       }),
     }),
   ],
-  providers: [
-    JwtStrategy
-  ],
+  providers: [JwtStrategy],
   exports: [JwtModule, PassportModule],
 })
 export class AuthModule {}

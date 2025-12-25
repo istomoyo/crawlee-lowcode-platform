@@ -5,11 +5,12 @@
 
       <div>
         <ol
-          class="grid grid-cols-1 divide-x divide-gray-100 overflow-hidden rounded-lg border border-gray-100 text-sm text-gray-600 sm:grid-cols-4"
+          class="grid grid-cols-1 divide-x divide-gray-100 overflow-hidden rounded-lg border border-gray-100 text-sm text-gray-600 sm:grid-cols-5"
         >
           <li
-            class="flex items-center justify-center gap-2 p-4"
+            class="flex items-center justify-center gap-2 p-4 cursor-pointer hover:bg-gray-100 transition-colors"
             :class="active == 0 ? 'bg-gray-200' : ''"
+            @click="goToStep(0)"
           >
             <svg
               class="size-7 shrink-0"
@@ -36,8 +37,9 @@
           </li>
 
           <li
-            class="relative flex items-center justify-center gap-2 p-4"
+            class="relative flex items-center justify-center gap-2 p-4 cursor-pointer hover:bg-gray-100 transition-colors"
             :class="active == 1 ? 'bg-gray-200' : ''"
+            @click="goToStep(1)"
           >
             <span
               class="absolute top-1/2 -left-2 hidden size-4 -translate-y-1/2 rotate-45 border border-gray-100 sm:block ltr:border-s-0 ltr:border-b-0 ltr:bg-white rtl:border-e-0 rtl:border-t-0 rtl:bg-gray-50"
@@ -79,8 +81,9 @@
           </li>
 
           <li
-            class="flex items-center justify-center gap-2 p-4"
+            class="flex items-center justify-center gap-2 p-4 cursor-pointer hover:bg-gray-100 transition-colors"
             :class="active == 2 ? 'bg-gray-200' : ''"
+            @click="goToStep(2)"
           >
             <svg
               class="size-7 shrink-0"
@@ -107,8 +110,39 @@
           </li>
 
           <li
-            class="flex items-center justify-center gap-2 p-4"
+            class="flex items-center justify-center gap-2 p-4 cursor-pointer hover:bg-gray-100 transition-colors"
             :class="active == 3 ? 'bg-gray-200' : ''"
+            @click="goToStep(3)"
+          >
+            <svg
+              class="size-7 shrink-0"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+              ></path>
+              <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+
+            <p class="leading-none">
+              <strong class="block font-medium text-gray-900">
+                最终配置
+              </strong>
+
+              <small class="mt-1"> 运行参数设置 </small>
+            </p>
+          </li>
+
+          <li
+            class="flex items-center justify-center gap-2 p-4 cursor-pointer hover:bg-gray-100 transition-colors"
+            :class="active == 4 ? 'bg-gray-200' : ''"
+            @click="goToStep(4)"
           >
             <svg
               class="size-7 shrink-0"
@@ -149,14 +183,33 @@
 
 <script setup>
 import { computed } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 
 const route = useRoute();
+const router = useRouter();
+
 const active = computed(() => {
   if (route.path.includes("basic")) return 0;
   if (route.path.includes("structure")) return 1;
   if (route.path.includes("mapping")) return 2;
-  if (route.path.includes("preview")) return 3;
+  if (route.path.includes("config")) return 3;
+  if (route.path.includes("preview")) return 4;
   return 0;
 });
+
+// 步骤路由映射
+const stepRoutes = [
+  "/crawleer/task-add/basic",
+  "/crawleer/task-add/structure",
+  "/crawleer/task-add/mapping",
+  "/crawleer/task-add/config",
+  "/crawleer/task-add/preview"
+];
+
+// 跳转到指定步骤
+function goToStep(stepIndex) {
+  if (stepIndex >= 0 && stepIndex < stepRoutes.length) {
+    router.push(stepRoutes[stepIndex]);
+  }
+}
 </script>

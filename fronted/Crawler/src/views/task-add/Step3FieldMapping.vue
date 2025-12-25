@@ -1,6 +1,34 @@
 <template>
   <el-card class="h-full flex flex-col p-4">
-    <h3 class="font-bold mb-3">字段结构映射（表格版）</h3>
+    <div class="flex justify-between items-center mb-3">
+      <h3 class="font-bold">字段结构映射（表格版）</h3>
+      <div class="flex gap-2">
+        <el-button
+          v-if="!batchMode"
+          size="small"
+          type="primary"
+          @click="enableBatchMode"
+        >
+          批量删除
+        </el-button>
+        <el-button
+          v-else
+          size="small"
+          type="danger"
+          :disabled="selectedNodes.length === 0"
+          @click="confirmBatchDelete"
+        >
+          删除选中 ({{ selectedNodes.length }})
+        </el-button>
+        <el-button
+          v-if="batchMode"
+          size="small"
+          @click="disableBatchMode"
+        >
+          取消批量
+        </el-button>
+      </div>
+    </div>
 
     <div v-if="tableLoading" class="flex items-center justify-center py-10">
       <el-spinner />
@@ -9,9 +37,12 @@
     <FieldNodeList
       v-else
       :nodes="rootNodes"
+      :batch-mode="batchMode"
+      :selected-nodes="selectedNodes"
       @edit="openEditDialog"
       @remove="removeNode"
       @add-child="openAddChildDialog"
+      @selection-change="handleSelectionChange"
     />
 
     <!-- 添加新节点 -->
@@ -20,6 +51,8 @@
         <el-option label="字段" value="field" />
         <el-option label="图片" value="image" />
         <el-option label="链接" value="link" />
+        <el-option label="分页" value="next" />
+        <el-option label="滚动" value="scroll" />
       </el-select>
       <el-button type="primary" size="small" @click="addNewNode"
         >添加属性</el-button
@@ -28,11 +61,14 @@
 
     <!-- 编辑弹框 -->
     <el-dialog v-model="editDialogVisible" title="编辑属性" width="400px">
-      <el-form :model="editNode">
+      <el-form :model="editNode" ref="editForm">
         <el-form-item label="属性名">
           <el-input v-model="editNode.label" />
         </el-form-item>
-        <el-form-item label="XPath">
+        <el-form-item
+          v-if="editNode.type !== 'scroll'"
+          label="XPath"
+        >
           <el-input
             v-model="editNode.selector"
             @input="editNode.jsPath = ''"
@@ -44,6 +80,56 @@
             v-model="editNode.jsPath"
             @input="editNode.selector = ''"
             placeholder="document.querySelector('...')"
+          />
+        </el-form-item>
+        <el-form-item
+          v-if="editNode.type === 'next'"
+          label="最大页数"
+          :rules="[{ required: true, message: '必须填写最大页数' }]"
+        >
+          <el-input-number
+            v-model="editNode.maxPages"
+            :min="1"
+            :max="50"
+            placeholder="10"
+          />
+        </el-form-item>
+        <el-form-item
+          v-if="editNode.type === 'scroll'"
+          label="最大滚动次数"
+          :rules="[{ required: true, message: '必须填写最大滚动次数' }]"
+        >
+          <el-input-number
+            v-model="editNode.maxScroll"
+            :min="1"
+            :max="20"
+            placeholder="5"
+          />
+        </el-form-item>
+        <el-form-item
+          v-if="editNode.type === 'scroll'"
+          label="等待时间(ms)"
+          :rules="[{ required: true, message: '必须填写等待时间' }]"
+        >
+          <el-input-number
+            v-model="editNode.waitTime"
+            :min="500"
+            :max="5000"
+            :step="100"
+            placeholder="1000"
+          />
+        </el-form-item>
+        <el-form-item
+          v-if="editNode.type === 'scroll'"
+          label="最大数量限制"
+          :rules="[{ required: true, message: '必须填写最大数量限制' }]"
+        >
+          <el-input-number
+            v-model="editNode.maxItems"
+            :min="1"
+            :max="1000"
+            :step="10"
+            placeholder="100"
           />
         </el-form-item>
       </el-form>
@@ -137,26 +223,53 @@ import FieldNodeList from "./components/FieldNodeList.vue";
 interface TreeNode {
   id: number;
   label: string;
-  type: "field" | "image" | "link";
+  type: "field" | "image" | "link" | "next" | "scroll";
   selector?: string;
   jsPath?: string;
   samples?: string[];
   children?: TreeNode[];
   hasChildren?: boolean;
   imgSrc?: string;
+  maxPages?: number;
+  maxScroll?: number;
+  waitTime?: number;
+  maxItems?: number;
+}
+
+declare global {
+  interface TreeNode {
+    id: number;
+    label: string;
+    type: "field" | "image" | "link" | "next" | "scroll";
+    selector?: string;
+    jsPath?: string;
+    samples?: string[];
+    children?: TreeNode[];
+    hasChildren?: boolean;
+    imgSrc?: string;
+    maxPages?: number;
+    maxScroll?: number;
+    waitTime?: number;
+    maxItems?: number;
+  }
 }
 
 const store = useTaskFormStore();
 let idSeed = 1;
-const rootNodes = computed<TreeNode[]>(() => store.treeData as unknown as TreeNode[]);
+const rootNodes = computed(() => store.treeData as any);
 const router = useRouter();
 
 // 编辑弹框
 const editDialogVisible = ref(false);
 const editNode = ref<TreeNode>({} as TreeNode);
+const editForm = ref();
+
+// 批量删除
+const batchMode = ref(false);
+const selectedNodes = ref<TreeNode[]>([]);
 
 // 新节点类型
-const newNodeType = ref<"field" | "image" | "link">("field");
+const newNodeType = ref<"field" | "image" | "link" | "next" | "scroll">("field");
 
 interface ListItem {
   xpath: string;
@@ -405,7 +518,7 @@ async function initTree() {
 
 // 创建节点
 function createNode(
-  type: "field" | "image" | "link",
+  type: "field" | "image" | "link" | "next" | "scroll",
   label: string,
   selector: string,
   samples: string[] = [],
@@ -430,9 +543,53 @@ function openEditDialog(node: TreeNode) {
   editDialogVisible.value = true;
 }
 function saveEdit() {
-  const target = store.treeData.find((n) => n.id === editNode.value.id);
-  if (target) Object.assign(target, editNode.value);
-  editDialogVisible.value = false;
+  // 表单验证
+  const editFormRef = editForm.value as any;
+  if (editFormRef) {
+    editFormRef.validate(async (valid: boolean) => {
+      if (!valid) {
+        return false;
+      }
+
+      // 额外验证逻辑
+      // 检查XPath和JSPath不能同时填写
+      if (editNode.value.selector?.trim() && editNode.value.jsPath?.trim()) {
+        ElMessage.error('XPath和JSPath只能填写其中之一');
+        return false;
+      }
+
+      if (editNode.value.type === 'next') {
+        if (!editNode.value.selector?.trim() && !editNode.value.jsPath?.trim()) {
+          ElMessage.error('分页节点必须填写XPath或JSPath其中之一');
+          return false;
+        }
+        if (!editNode.value.maxPages || editNode.value.maxPages < 1 || editNode.value.maxPages > 50) {
+          ElMessage.error('最大页数必须在1-50之间');
+          return false;
+        }
+      }
+
+      if (editNode.value.type === 'scroll') {
+        if (!editNode.value.maxScroll || editNode.value.maxScroll < 1 || editNode.value.maxScroll > 20) {
+          ElMessage.error('最大滚动次数必须在1-20之间');
+          return false;
+        }
+        if (!editNode.value.waitTime || editNode.value.waitTime < 500 || editNode.value.waitTime > 5000) {
+          ElMessage.error('等待时间必须在500-5000ms之间');
+          return false;
+        }
+        if (!editNode.value.maxItems || editNode.value.maxItems < 1 || editNode.value.maxItems > 1000) {
+          ElMessage.error('最大数量限制必须在1-1000之间');
+          return false;
+        }
+      }
+
+      const target = store.treeData.find((n) => n.id === editNode.value.id);
+      if (target) Object.assign(target, editNode.value);
+      editDialogVisible.value = false;
+      ElMessage.success('保存成功');
+    });
+  }
 }
 
 // 删除
@@ -448,9 +605,84 @@ function removeNode(id: number) {
   dfs(store.treeData as any);
 }
 
+// 批量删除
+function enableBatchMode() {
+  batchMode.value = true;
+  selectedNodes.value = [];
+}
+
+function disableBatchMode() {
+  batchMode.value = false;
+  selectedNodes.value = [];
+}
+
+function handleSelectionChange(nodes: TreeNode[]) {
+  selectedNodes.value = nodes;
+}
+
+function confirmBatchDelete() {
+  if (selectedNodes.value.length === 0) {
+    ElMessage.warning('请先选择要删除的节点');
+    return;
+  }
+
+  ElMessageBox.confirm(
+    `确定要删除选中的 ${selectedNodes.value.length} 个节点吗？此操作不可恢复。`,
+    '批量删除确认',
+    {
+      confirmButtonText: '确定删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    }
+  )
+    .then(() => {
+      // 执行批量删除
+      const idsToDelete = selectedNodes.value.map(node => node.id);
+      idsToDelete.forEach(id => removeNode(id));
+
+      disableBatchMode();
+      ElMessage.success(`成功删除 ${idsToDelete.length} 个节点`);
+    })
+    .catch(() => {
+      // 用户取消操作
+    });
+}
+
 // 添加最外层新节点
 function addNewNode() {
-  const node = createNode(newNodeType.value, "新属性", ".//text()", [""]);
+  // 检查是否已经存在 next 或 scroll 类型的节点
+  if ((newNodeType.value === "next" || newNodeType.value === "scroll") &&
+      store.treeData.some(node => node.type === "next" || node.type === "scroll")) {
+    ElMessage.warning("一层只能添加一个分页或滚动节点");
+    return;
+  }
+
+  let label = "新属性";
+  let selector = ".//text()";
+  let maxPages: number | undefined;
+  let maxScroll: number | undefined;
+  let waitTime: number | undefined;
+  let maxItems: number | undefined;
+
+  if (newNodeType.value === "next") {
+    label = "分页";
+    selector = "//a[@class='next']";
+    maxPages = 10;
+  } else if (newNodeType.value === "scroll") {
+    label = "滚动";
+    selector = "";
+    maxScroll = 5;
+    waitTime = 1000;
+    maxItems = 100;
+  }
+
+  const node = createNode(newNodeType.value, label, selector, [""]);
+  // 设置默认值
+  if (maxPages !== undefined) node.maxPages = maxPages;
+  if (maxScroll !== undefined) node.maxScroll = maxScroll;
+  if (waitTime !== undefined) node.waitTime = waitTime;
+  if (maxItems !== undefined) node.maxItems = maxItems;
+
   store.treeData.push(node);
 }
 
@@ -458,7 +690,24 @@ function goPrev() {
   router.push("/crawleer/task-add/structure");
 }
 function goNext() {
-  router.push("/crawleer/task-add/preview");
+  // 检查是否配置了分页或滚动
+  const hasPaginationOrScroll = store.treeData.some(node =>
+    node.type === 'next' || node.type === 'scroll'
+  );
+
+  if (!hasPaginationOrScroll) {
+    ElMessage.error("请至少配置一个分页或滚动节点来控制数据获取范围");
+    return;
+  }
+
+  // 检查滚动节点是否配置了maxItems
+  const scrollNode = store.treeData.find(node => node.type === 'scroll');
+  if (scrollNode && (!scrollNode.maxItems || scrollNode.maxItems < 1)) {
+    ElMessage.error("滚动节点必须配置最大数量限制");
+    return;
+  }
+
+  router.push("/crawleer/task-add/config");
 }
 
 onMounted(initTree);

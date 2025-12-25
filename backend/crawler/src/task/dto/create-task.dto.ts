@@ -11,7 +11,7 @@ export class CreateTaskDto {
 
   @IsOptional()
   @IsString()
-  config?: string;  // JSON 字符串
+  config?: string; // JSON 字符串
 
   @IsOptional()
   @IsString()

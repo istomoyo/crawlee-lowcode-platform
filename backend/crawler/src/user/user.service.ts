@@ -20,6 +20,8 @@ import { ChangePasswordDto } from './dto/change-password.dto';
 import { UserRole } from './entities/user-role.enum';
 import * as svgCaptcha from 'svg-captcha';
 import { Response } from 'express'; // 导入 Response 类型
+import * as fs from 'fs';
+import * as path from 'path';
 
 @Injectable()
 export class UserService {
@@ -155,6 +157,23 @@ export class UserService {
   async updateAvatar(userId: number, filename: string) {
     const user = await this.userRepo.findOne({ where: { id: userId } });
     if (!user) throw new Error('用户不存在');
+
+    if (user.avatar && !user.avatar.includes('default')) {
+      const oldFilename = user.avatar.split('/').pop();
+
+      if (oldFilename) {
+        const oldFilePath = path.join(
+          process.cwd(),
+          'uploads',
+          'avatars',
+          oldFilename,
+        );
+
+        if (fs.existsSync(oldFilePath)) {
+          await fs.promises.unlink(oldFilePath);
+        }
+      }
+    }
 
     user.avatar = `/uploads/avatars/${filename}`;
     const savedUser = await this.userRepo.save(user);

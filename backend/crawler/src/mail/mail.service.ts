@@ -8,9 +8,9 @@ export class MailService {
 
   constructor() {
     this.transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST,   // QQ邮箱 smtp.qq.com
+      host: process.env.SMTP_HOST, // QQ邮箱 smtp.qq.com
       port: Number(process.env.SMTP_PORT) || 465,
-      secure: true,                  // 465 为 true, 587 为 false
+      secure: true, // 465 为 true, 587 为 false
       auth: {
         user: process.env.SMTP_USER, // QQ邮箱
         pass: process.env.SMTP_PASS, // SMTP 授权码

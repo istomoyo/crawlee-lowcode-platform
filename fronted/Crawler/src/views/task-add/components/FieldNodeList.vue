@@ -6,7 +6,15 @@
     stripe
     border
     :tree-props="{ children: 'children', hasChildren: 'hasChildren' }"
+    @selection-change="handleSelectionChange"
   >
+    <el-table-column
+      v-if="batchMode"
+      type="selection"
+      width="55"
+      :reserve-selection="true"
+    />
+
     <el-table-column prop="label" label="属性名" width="200" />
 
     <el-table-column label="类型" width="80">
@@ -79,9 +87,12 @@
         <div v-if="row.children?.length" class="pl-4">
           <FieldNodeList
             :nodes="row.children"
+            :batch-mode="batchMode"
+            :selected-nodes="selectedNodes"
             @edit="(n) => emit('edit', n)"
             @remove="(id) => emit('remove', id)"
             @add-child="(n) => emit('add-child', n)"
+            @selection-change="(nodes) => emit('selection-change', nodes)"
           />
         </div>
       </template>
@@ -95,27 +106,37 @@ import { defineProps, defineEmits } from "vue";
 interface TreeNode {
   id: number;
   label: string;
-  type: "field" | "image" | "link";
+  type: "field" | "image" | "link" | "next" | "scroll";
   selector?: string;
   jsPath?: string;
   samples?: string[];
   children?: TreeNode[];
   hasChildren?: boolean;
   imgSrc?: string;
+  maxPages?: number;
+  maxScroll?: number;
+  waitTime?: number;
 }
 
 defineProps<{
   nodes: TreeNode[];
+  batchMode?: boolean;
+  selectedNodes?: TreeNode[];
 }>();
 
 const emit = defineEmits<{
   (e: "edit", node: TreeNode): void;
   (e: "remove", id: number): void;
   (e: "add-child", node: TreeNode): void;
+  (e: "selection-change", nodes: TreeNode[]): void;
 }>();
 
 const firstSample = (row: TreeNode) => row.samples?.[0] ?? "";
 const imageHref = (row: TreeNode) => row.imgSrc || firstSample(row);
 const displayPath = (row: TreeNode) => row.selector || row.jsPath || "";
+
+const handleSelectionChange = (selection: TreeNode[]) => {
+  emit("selection-change", selection);
+};
 </script>
 

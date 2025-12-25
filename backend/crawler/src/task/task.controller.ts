@@ -4,51 +4,23 @@ import {
   Body,
   Req,
   UseGuards,
+  Get,
+  Query,
+  Delete,
   Param,
-  UnauthorizedException,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TaskService } from './task.service';
 import type { Request } from 'express';
 import { SuccessMessage } from '../common/decorators/success-message.decorator';
-import { IsString, IsUrl, IsOptional, Min, IsNumber } from 'class-validator';
 import { XpathParseDto } from './dto/xpath-parse.dto';
 import { XpathMatchDto } from './dto/xpath-match.dto';
-// import fetch from 'node-fetch'; // 或 node 18+ 内置 fetch
-import {
-  Response,
-  Query,
-  Get,
-  Res,
-  HttpException,
-  HttpStatus,
-} from '@nestjs/common';
-class ListPreviewDto {
-  @IsUrl()
-  @IsString()
-  url: string;
-
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
-  targetAspectRatio?: number; // 新增
-
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
-  tolerance?: number; // 新增
-}
+import { ExecuteTaskDto } from './dto/execute-task.dto';
+import { ListPreviewDto } from './dto/list-preview.dto';
 
 class JsPathParseDto {
-  @IsUrl()
-  @IsString()
   url: string;
-
-  @IsString()
   jsPath: string;
-
-  @IsOptional()
-  @IsString()
   waitSelector?: string;
 }
 
@@ -98,5 +70,55 @@ export class TaskController {
   async parseByJsPath(@Body() body: JsPathParseDto) {
     const { url, jsPath, waitSelector } = body;
     return this.taskService.parseByJsPath(url, jsPath, waitSelector);
+  }
+
+  @SuccessMessage('任务执行成功')
+  @Post('execute')
+  async executeTask(@Body() body: ExecuteTaskDto, @Req() req: Request) {
+    const { taskId, taskName, url, config, overrideConfig } = body;
+    const user = req.user as { id: number };
+    return this.taskService.executeTaskByCrawlee(
+      taskId,
+      taskName,
+      url,
+      config,
+      overrideConfig,
+      user.id,
+    );
+  }
+
+  @Get('engine-status')
+  async getEngineStatus() {
+    return this.taskService.getCrawlerEngineStatus();
+  }
+
+  @Get('list')
+  async getTaskList(
+    @Req() req: Request,
+    @Query('page') page = 1,
+    @Query('limit') limit = 10,
+    @Query('search') search?: string,
+  ) {
+    console.log('headers.authorization =', req.headers.authorization);
+    console.log('req.user =', req.user);
+
+    const user = req.user as { id: number };
+    return this.taskService.getTaskList(user.id, {
+      page: Number(page),
+      limit: Number(limit),
+      search,
+    });
+  }
+
+  @Get('execution-result/:executionId')
+  async getExecutionResult(@Param('executionId') executionId: string, @Req() req: Request) {
+    const user = req.user as { id: number };
+    return this.taskService.getExecutionResult(parseInt(executionId), user.id);
+  }
+
+  @Delete()
+  async deleteTask(@Body() body: { name: string; url: string }, @Req() req: Request) {
+    const user = req.user as { id: number };
+    return this.taskService.deleteTaskByNameAndUrl(body.name, body.url, user.id);
   }
 }

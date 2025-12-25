@@ -26,8 +26,10 @@
     "@nestjs/mapped-types": "*",
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-express": "^11.1.9",
+    "@nestjs/platform-socket.io": "^11.1.10",
     "@nestjs/serve-static": "^5.0.4",
     "@nestjs/typeorm": "^11.0.0",
+    "@nestjs/websockets": "^11.1.10",
     "bcrypt": "^6.0.0",
     "bcryptjs": "^3.0.3",
     "class-transformer": "^0.5.1",
@@ -44,6 +46,7 @@
     "playwright": "^1.57.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
+    "socket.io": "^4.8.3",
     "svg-captcha": "^1.4.0",
     "typeorm": "^0.3.28"
   },

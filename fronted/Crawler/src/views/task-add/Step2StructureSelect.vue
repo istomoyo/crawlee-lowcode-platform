@@ -8,8 +8,19 @@
         fill="none"
         viewBox="0 0 24 24"
       >
-        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+        <circle
+          class="opacity-25"
+          cx="12"
+          cy="12"
+          r="10"
+          stroke="currentColor"
+          stroke-width="4"
+        />
+        <path
+          class="opacity-75"
+          fill="currentColor"
+          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+        />
       </svg>
       <p class="mt-4">Loading...</p>
     </div>
@@ -32,7 +43,10 @@
             @click="selectAuto(index)"
           >
             <template #header>{{ item.xpath }}</template>
-            <img :src="'data:image/png;base64,' + item.base64" class="w-full h-40 object-contain"/>
+            <img
+              :src="'data:image/png;base64,' + item.base64"
+              class="w-full h-40 object-contain"
+            />
             <p class="text-sm mt-1">数量：{{ item.matchCount }}</p>
           </el-card>
         </div>
@@ -64,7 +78,11 @@
     <!-- 底部按钮 -->
     <div class="mt-4 flex justify-end gap-2">
       <el-button @click="prevStep">上一步</el-button>
-      <el-button type="primary" :disabled="!store.selectedItem" @click="nextStep">
+      <el-button
+        type="primary"
+        :disabled="!store.selectedItem"
+        @click="nextStep"
+      >
         下一步
       </el-button>
     </div>
@@ -101,15 +119,15 @@ async function fetchListItems() {
 
   try {
     const { value: ratioValues } = await ElMessageBox.prompt(
-      '请输入目标长宽比和允许误差，使用两个输入框分别填写，例如目标长宽比 1，允许误差 0.3',
-      '列表识别设置',
+      "请输入目标长宽比和允许误差，使用两个输入框分别填写，例如目标长宽比 1，允许误差 0.3",
+      "列表识别设置",
       {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        inputValue: '1',
+        confirmButtonText: "确定",
+        cancelButtonText: "取消",
+        inputValue: "1",
         inputPattern: /^\d+(\.\d+)?$/,
-        inputErrorMessage: '请输入合法数字',
-        inputPlaceholder: '目标长宽比',
+        inputErrorMessage: "请输入合法数字",
+        inputPlaceholder: "目标长宽比",
       }
     );
 
@@ -117,15 +135,15 @@ async function fetchListItems() {
     if (isNaN(targetAspectRatio)) throw new Error("目标长宽比错误");
 
     const { value: toleranceValue } = await ElMessageBox.prompt(
-      '请输入允许误差',
-      '列表识别设置',
+      "请输入允许误差",
+      "列表识别设置",
       {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        inputValue: '0.3',
+        confirmButtonText: "确定",
+        cancelButtonText: "取消",
+        inputValue: "0.3",
         inputPattern: /^\d+(\.\d+)?$/,
-        inputErrorMessage: '请输入合法数字',
-        inputPlaceholder: '允许误差',
+        inputErrorMessage: "请输入合法数字",
+        inputPlaceholder: "允许误差",
       }
     );
 
@@ -135,8 +153,6 @@ async function fetchListItems() {
     loading.value = true;
     const res = await listPreviewApi({
       url: store.form.url,
-      targetAspectRatio,
-      tolerance,
     });
 
     listItems.splice(0, listItems.length, ...res);

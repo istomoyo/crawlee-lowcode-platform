@@ -44,7 +44,13 @@ const routes: Array<RouteRecordRaw> = [
           },
           {
             path: "preview",
-            component: () => import("@/views/task-add/Step4Preview.vue"),
+            component: () => import("@/views/task-add/Step5Preview.vue"),
+            meta: { keepAlive: true },
+          },
+
+          {
+            path: "config",
+            component: () => import("@/views/task-add/Step4Config.vue"),
             meta: { keepAlive: true },
           },
         ],

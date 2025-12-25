@@ -9,9 +9,20 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { join } from 'path';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser'; // ✅ 默认导入
+import { IoAdapter } from '@nestjs/platform-socket.io';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // 启用WebSocket适配器
+  app.useWebSocketAdapter(new IoAdapter(app));
+
+  // 启用CORS
+  app.enableCors({
+    origin: true, // 在生产环境中应该更严格
+    credentials: true,
+  });
+
   app.use(cookieParser());
   app.useGlobalPipes(
     new ValidationPipe({

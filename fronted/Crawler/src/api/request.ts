@@ -4,7 +4,6 @@ import type {
   AxiosResponse,
   InternalAxiosRequestConfig,
 } from "axios";
-import { ElMessage } from "element-plus";
 import router from "@/router";
 import { useUserStore } from "@/stores/user";
 // 创建 axios 实例
@@ -29,16 +28,14 @@ request.interceptors.request.use(
 request.interceptors.response.use(
   (response: AxiosResponse) => {
     const res = response.data;
-    if (res.code === 200 && res.message) {
-      ElMessage.success(res.message);
-    }
+    // 移除前端的消息提示，由后端统一处理
     return res.data;
   },
   (error) => {
     if (error.response) {
-      const { code, message } = error.response.data;
+      const { code } = error.response.data;
       const url = error.config?.url || "";
-      
+
       // 如果是登出接口返回 401，不需要再次调用 logout（避免循环）
       if (code === 401 && !url.includes("/logout")) {
         // 401 未授权，清理所有用户状态
@@ -47,16 +44,10 @@ request.interceptors.response.use(
         userStore.user = null;
         userStore.checked = false;
         sessionStorage.removeItem("user");
-        ElMessage.error(message || "未授权，请登录");
+        // 移除前端消息提示，后端已处理
         router.replace("/login");
-      } else if (code === 401) {
-        // 登出接口的 401，只显示错误信息
-        ElMessage.error(message || "未授权，请登录");
-      } else {
-        ElMessage.error(message || "请求失败");
       }
-    } else {
-      ElMessage.error("无法连接服务器");
+      // 其他错误由后端处理，不在前端重复显示
     }
     return Promise.reject(error);
   }

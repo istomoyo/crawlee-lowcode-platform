@@ -9,7 +9,7 @@ script: 用户写的爬虫逻辑（低代码）
 status: 任务状态，pending | running | success | failed
 user: 关联的用户
 createdAt: 创建时间
-updatedAt: 更新时间
+endTime: 任务结束时间
 */
 
 import {
@@ -50,6 +50,6 @@ export class Task {
   @CreateDateColumn()
   createdAt: Date;
 
-  @UpdateDateColumn()
-  updatedAt: Date;
+  @Column({ type: 'datetime', nullable: true })
+  endTime: Date; // 任务结束时间
 }

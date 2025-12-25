@@ -4,6 +4,20 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import * as playwright from 'playwright';
+import {
+  PlaywrightCrawler,
+  CheerioCrawler,
+  Dataset,
+  KeyValueStore,
+  RequestQueue,
+} from 'crawlee';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Task } from './entities/task.entity';
+import { Execution } from '../execution/entities/execution.entity';
+import { CrawleeTaskConfig } from './dto/execute-task.dto';
+import { CrawleeEngineService } from './crawlee-engine.service';
+import { TaskGateway } from './task.gateway';
 
 export interface ResultItem {
   xpath: string;
@@ -37,6 +51,15 @@ export interface ParseResult {
 }
 @Injectable()
 export class TaskService {
+  constructor(
+    @InjectRepository(Task)
+    private readonly taskRepository: Repository<Task>,
+    @InjectRepository(Execution)
+    private readonly executionRepository: Repository<Execution>,
+    private readonly crawleeEngineService: CrawleeEngineService,
+    private readonly taskGateway: TaskGateway,
+  ) {}
+
   async capturePreviewScreenshot(url: string): Promise<string> {
     if (!/^https?:\/\//.test(url)) {
       throw new BadRequestException('URL 格式不正确');
@@ -64,6 +87,7 @@ export class TaskService {
       if (browser) await browser.close();
     }
   }
+
   /**
    * 返回页面最有代表性的前 4 个元素，供预览
    */
@@ -72,8 +96,8 @@ export class TaskService {
     maxItems = 3,
     minArea = 1000,
     maxArea = 500000,
-    targetAspectRatio = 1, // 目标长宽比
-    tolerance = 0.3, // 长宽比允许误差
+    targetAspectRatio = 1,
+    tolerance = 0.3,
   ): Promise<ResultItem[]> {
     if (!/^https?:\/\//.test(url)) {
       throw new BadRequestException('URL 格式不正确');
@@ -91,10 +115,10 @@ export class TaskService {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
       await page.waitForTimeout(2000);
 
-      // 触发懒加载：分段滚动到一定距离，控制次数与延时
       const scrollStep = 1000;
       const maxScrollDistance = 8000;
       let scrolled = 0;
+
       while (scrolled < maxScrollDistance) {
         await page.mouse.wheel(0, scrollStep);
         scrolled += scrollStep;
@@ -126,7 +150,6 @@ export class TaskService {
           if (area < minArea || area > maxArea) continue;
 
           const aspectRatio = box.width / box.height;
-          // 新增长宽比范围过滤
           if (
             aspectRatio < targetAspectRatio - tolerance ||
             aspectRatio > targetAspectRatio + tolerance
@@ -151,27 +174,129 @@ export class TaskService {
             (node) => !!node.querySelector('img'),
           );
 
-          /** ⭐ 生成 XPath */
-          const xpath = await el.evaluate((node) => {
-            const el = node as HTMLElement;
-            const tag = el.tagName.toLowerCase();
-            const classList = (el.className || '').split(/\s+/).filter(Boolean);
+          // const xpath = ...  // 移除这个重复声明
 
+
+          // 检查父节点是否被该 xpath 命中，如果命中则持续增强 xpath 唯一性
+          // 生成xpath工具，支持多策略
+          const genXpath = async (el, mode = 0) => {
+            return el.evaluate((node: HTMLElement, mode: number) => {
+              const tag = node.tagName.toLowerCase();
+              const classList = (node.className || '')
+                .split(/\s+/)
+                .filter(Boolean);
+              // 语义关键词，优先挑最长且最特殊的 class 替换最近的"recent"这种误命中
+              const keywordPattern = /(item|card|list|cell|box|entry|block)/i;
+              const semanticClasses = classList.filter((c) =>
+                keywordPattern.test(c),
+              );
+              // 按长度优先挑选
+              const bestClass = semanticClasses.sort(
+                (a, b) => b.length - a.length,
+              )[0];
+              if (mode === 0 && bestClass) {
+                // 完整 class 匹配，且更精确分词，避免只命中片段
+                return `//${tag}[contains(concat(' ', @class, ' '), ' ${bestClass} ')]`;
+              }
+              if ((mode === 0 || mode === 1) && classList.length > 0) {
+                // 回退：兜底取第1个完整 class
+                const c = classList[0];
+                return `//${tag}[contains(concat(' ', @class, ' '), ' ${c} ')]`;
+              }
+              // mode 2: tag + nth-of-type
+              if (node.parentElement) {
+                const siblings = Array.from(node.parentElement.children).filter(
+                  (s: Element) => s.tagName.toLowerCase() === tag,
+                );
+                if (siblings.length > 1) {
+                  let idx = 1;
+                  for (const sib of siblings) {
+                    if (sib === node) break;
+                    idx++;
+                  }
+                  return `//${tag}[${idx}]`;
+                }
+              }
+              return `//${tag}`;
+            }, mode);
+          };
+
+          // 生成parent的xpath
+          const getParentXpath = async (el, mode = 0) => {
+            return el.evaluate((node: HTMLElement, mode: number) => {
+              const tag = node.tagName.toLowerCase();
+              const classList = (node.className || '')
+                .split(/\s+/)
+                .filter(Boolean);
             const semanticClass = classList.find((c) =>
               /(item|card|list|cell|box|entry|block)/i.test(c),
             );
-
-            if (semanticClass) {
+              if (mode === 0 && semanticClass) {
               return `//${tag}[contains(@class, '${semanticClass}')]`;
             }
-
-            if (classList.length > 0) {
+              if ((mode === 0 || mode === 1) && classList.length > 0) {
               const c = classList[0].slice(0, 4);
               return `//${tag}[contains(@class, '${c}')]`;
             }
-
+              if (node.parentElement) {
+                const siblings = Array.from(node.parentElement.children).filter(
+                  (s: Element) => s.tagName.toLowerCase() === tag,
+                );
+                if (siblings.length > 1) {
+                  let idx = 1;
+                  for (const sib of siblings) {
+                    if (sib === node) break;
+                    idx++;
+                  }
+                  return `//${tag}[${idx}]`;
+                }
+              }
             return `//${tag}`;
-          });
+            }, mode);
+          };
+
+          let xpath = await genXpath(el, 0);
+          let parentHandle = (await el.evaluateHandle(
+            (node) => node.parentElement,
+          )) as playwright.ElementHandle<HTMLElement>;
+          let parentXpath = parentHandle
+            ? await getParentXpath(parentHandle, 0)
+            : '';
+          let parentMatched = false,
+            maxMode = 3,
+            mode = 0;
+          // 先查简单xpath是否撞父级，如果撞则 parentXpath+//+selfXpath
+          while (parentHandle && mode < maxMode) {
+            parentMatched = await parentHandle.evaluate((parent, xpath) => {
+              if (!parent) return false;
+              const r = document.evaluate(
+                xpath,
+                parent,
+                null,
+                XPathResult.ORDERED_NODE_ITERATOR_TYPE,
+                null,
+              );
+              let node = r.iterateNext();
+              while (node) {
+                if (node === parent) {
+                  return true;
+                }
+                node = r.iterateNext();
+              }
+              return false;
+            }, xpath);
+            if (!parentMatched) break;
+            // 如果撞了，直接组合parentXpath与selfXpath:
+            if (parentXpath && xpath) {
+              xpath = parentXpath + '//' + xpath.replace(/^\//, '');
+            } else {
+              mode++;
+              xpath = await genXpath(el, mode);
+              parentXpath = await getParentXpath(parentHandle, mode);
+            }
+          }
+          await parentHandle?.dispose();
+            if (parentMatched) continue;
 
           candidates.push({
             handle: el as playwright.ElementHandle<HTMLElement>,
@@ -187,7 +312,6 @@ export class TaskService {
         }
       }
 
-      /** ⭐ 打分，根据接近 targetAspectRatio */
       const scored = candidates
         .map((c) => ({
           candidate: c,
@@ -195,7 +319,7 @@ export class TaskService {
             (c.hasImage ? 60 : 0) +
             c.childCount * 2 +
             c.tagTypeCount * 3 -
-            Math.abs(targetAspectRatio - c.aspectRatio) * 10, // 接近目标长宽比得分
+            Math.abs(targetAspectRatio - c.aspectRatio) * 10,
         }))
         .sort((a, b) => b.score - a.score);
 
@@ -209,6 +333,7 @@ export class TaskService {
         if (usedXpaths.has(xpath)) continue;
 
         const matchCount = await page.locator(`xpath=${xpath}`).count();
+
         if (matchCount < 3 || matchCount > 200) continue;
 
         try {
@@ -604,8 +729,7 @@ export class TaskService {
       for (let i = 1; i < selectors.length; i++) {
         if (!elementHandle) break;
         elementHandle = (await elementHandle.evaluateHandle(
-          (el, sel) =>
-            (el as HTMLElement).shadowRoot?.querySelector(sel) ?? null,
+          (el, sel) => el.shadowRoot?.querySelector(sel) ?? null,
           selectors[i],
         )) as playwright.ElementHandle<HTMLElement> | null;
       }
@@ -697,5 +821,391 @@ export class TaskService {
     } finally {
       if (browser) await browser.close();
     }
+  }
+
+  async executeTaskByCrawlee(
+    taskId?: string,
+    taskName?: string,
+    url?: string,
+    customConfig?: CrawleeTaskConfig,
+    overrideConfig?: Partial<CrawleeTaskConfig>,
+    userId?: number,
+  ) {
+    let task;
+
+    if (taskId) {
+      // 使用现有任务
+      task = await this.taskRepository.findOne({
+        where: { id: parseInt(taskId) },
+        relations: ['user'],
+      });
+      if (!task) {
+        throw new BadRequestException('任务不存在');
+      }
+      // 检查任务是否属于当前用户
+      if (task.user.id !== userId) {
+        throw new BadRequestException('无权限访问此任务');
+      }
+    } else {
+      // 创建新任务
+      if (!taskName || !url) {
+        throw new BadRequestException('创建新任务需要提供任务名称和URL');
+      }
+
+      const newTask = this.taskRepository.create({
+        name: taskName,
+        url: url,
+        config: customConfig ? JSON.stringify(customConfig) : '{}',
+        status: 'pending',
+        user: { id: userId } as any, // 设置用户关联
+      });
+      task = await this.taskRepository.save(newTask);
+
+      // 广播新任务创建消息
+      this.taskGateway.broadcastTaskCreated({
+        id: task.id,
+        name: task.name,
+        url: task.url,
+        status: task.status,
+        progress: 0,
+        lastExecutionTime: null,
+        createdAt: task.createdAt.toISOString(),
+        endTime: task.endTime?.toISOString() || null,
+        latestExecution: null,
+      });
+    }
+
+    // 创建执行记录
+    const execution = this.executionRepository.create({
+      task,
+      taskId: task.id,
+      status: 'running',
+      log: '开始执行任务...',
+    });
+    await this.executionRepository.save(execution);
+
+    try {
+      // 解析配置
+      let config: CrawleeTaskConfig;
+      if (customConfig) {
+        config = customConfig;
+      } else if (task.config) {
+        config = JSON.parse(task.config);
+      } else {
+        throw new BadRequestException('任务配置为空');
+      }
+
+      // 应用覆盖配置
+      if (overrideConfig) {
+        config = { ...config, ...overrideConfig };
+      }
+
+      // 设置默认值 - 默认使用PlaywrightCrawler
+      const defaultConfig: CrawleeTaskConfig = {
+        crawlerType: 'playwright', // 默认为PlaywrightCrawler
+        urls: [task.url],
+        maxRequestsPerCrawl: 1,
+        maxConcurrency: 1,
+        headless: true,
+        viewport: { width: 1920, height: 1080 },
+        scrollEnabled: false,
+        scrollDistance: 1000,
+        scrollDelay: 1000,
+        maxScrollDistance: 10000,
+      };
+
+      config = { ...defaultConfig, ...config };
+
+      // 将任务添加到Crawlee引擎队列
+      await this.crawleeEngineService.addTaskToQueue({
+        taskId: task.id,
+        executionId: execution.id,
+        config,
+      });
+
+      return {
+        executionId: execution.id,
+        status: 'queued',
+        message: '任务已添加到爬虫队列，等待执行',
+        queueStatus: this.crawleeEngineService.getQueueStatus(),
+      };
+    } catch (error) {
+      // 更新执行状态为失败
+      execution.status = 'failed';
+      execution.log = `执行失败: ${error.message}`;
+      await this.executionRepository.save(execution);
+
+      throw new InternalServerErrorException(`任务执行失败: ${error.message}`);
+    }
+  }
+
+  // 获取爬虫引擎状态
+  getCrawlerEngineStatus() {
+    return this.crawleeEngineService.getQueueStatus();
+  }
+
+  // 计算任务进度
+  private calculateProgress(status: string, log?: string): number {
+    if (status === 'success') {
+      return 100;
+    }
+
+    if (status === 'failed') {
+      return 0;
+    }
+
+    if (status === 'pending') {
+      return 0;
+    }
+
+    if (status === 'running') {
+      // 尝试从日志中解析进度
+      if (log) {
+        // 查找类似 "已处理 50/100 个请求" 的模式
+        const progressMatch = log.match(/已处理\s*(\d+)\/(\d+)/);
+        if (progressMatch) {
+          const current = parseInt(progressMatch[1]);
+          const total = parseInt(progressMatch[2]);
+          if (total > 0) {
+            return Math.round((current / total) * 100);
+          }
+        }
+
+        // 查找类似 "处理中... 75%" 的模式
+        const percentMatch = log.match(/(\d+)%/);
+        if (percentMatch) {
+          return Math.min(parseInt(percentMatch[1]), 95); // 最高95%，留5%给完成
+        }
+      }
+
+      // 默认运行中进度
+      return 50;
+    }
+
+    return 0;
+  }
+
+  async deleteTask(taskId: number, userId: number) {
+    // 检查任务是否存在且属于当前用户
+    const task = await this.taskRepository.findOne({
+      where: { id: taskId, user: { id: userId } },
+    });
+
+    if (!task) {
+      throw new BadRequestException('任务不存在或无权限访问');
+    }
+
+    // 删除相关的执行记录
+    await this.executionRepository.delete({ task: { id: taskId } });
+
+    // 删除任务
+    await this.taskRepository.delete(taskId);
+
+    // 广播任务删除消息
+    this.taskGateway.broadcastTaskDeleted(taskId, task.name, task.url);
+
+    return { message: '任务删除成功' };
+  }
+
+  async deleteTaskByNameAndUrl(taskName: string, taskUrl: string, userId: number) {
+    // 检查任务是否存在且属于当前用户
+    const task = await this.taskRepository.findOne({
+      where: {
+        name: taskName,
+        url: taskUrl,
+        user: { id: userId }
+      },
+    });
+
+    if (!task) {
+      throw new BadRequestException('任务不存在或无权限访问');
+    }
+
+    // 获取相关的执行记录（用于删除结果文件）
+    const executions = await this.executionRepository.find({
+      where: { taskId: task.id },
+      select: ['resultPath'],
+    });
+
+    // 删除结果文件
+    const fs = require('fs').promises;
+    for (const execution of executions) {
+      if (execution.resultPath) {
+        try {
+          await fs.unlink(execution.resultPath);
+          console.log(`删除结果文件: ${execution.resultPath}`);
+        } catch (error) {
+          console.warn(`删除结果文件失败: ${execution.resultPath}`, error);
+        }
+      }
+    }
+
+    // 删除截图文件
+    if (task.screenshotPath) {
+      try {
+        const screenshotFullPath = `uploads/${task.screenshotPath}`;
+        await fs.unlink(screenshotFullPath);
+        console.log(`删除截图文件: ${screenshotFullPath}`);
+      } catch (error) {
+        console.warn(`删除截图文件失败: uploads/${task.screenshotPath}`, error);
+      }
+    }
+
+    // 删除相关的执行记录
+    await this.executionRepository.delete({ taskId: task.id });
+
+    // 删除任务
+    await this.taskRepository.delete(task.id);
+
+    // 广播任务删除消息
+    this.taskGateway.broadcastTaskDeleted(task.id, task.name, task.url);
+
+    return { message: '任务删除成功' };
+  }
+
+  async getTaskList(
+    userId: number,
+    options: {
+      page: number;
+      limit: number;
+      search?: string;
+    },
+  ) {
+    const { page, limit, search } = options;
+    const skip = (page - 1) * limit;
+
+    // 构建查询条件
+    const queryBuilder = this.taskRepository
+      .createQueryBuilder('task')
+      .leftJoinAndSelect('task.user', 'user')
+      .where('task.user.id = :userId', { userId })
+      .orderBy('task.createdAt', 'DESC') // 改为按创建时间排序
+      .skip(skip)
+      .take(limit);
+
+    // 添加搜索条件
+    if (search) {
+      queryBuilder.andWhere(
+        '(task.name LIKE :search OR task.url LIKE :search)',
+        { search: `%${search}%` },
+      );
+    }
+
+    // 获取任务列表
+    const [tasks, total] = await queryBuilder.getManyAndCount();
+
+    // 为每个任务获取最新的执行记录
+    const taskIds = tasks.map(task => task.id);
+    let latestExecutions: any[] = [];
+    if (taskIds.length > 0) {
+      latestExecutions = await this.executionRepository
+        .createQueryBuilder('execution')
+        .where('execution.taskId IN (:...taskIds)', { taskIds })
+        .orderBy('execution.startTime', 'DESC')
+        .getMany();
+    }
+
+    // 创建执行记录的Map，按任务ID分组
+    const executionsByTaskId = new Map<number, typeof latestExecutions[0]>();
+    for (const execution of latestExecutions) {
+      if (!executionsByTaskId.has(execution.taskId)) {
+        executionsByTaskId.set(execution.taskId, execution);
+      }
+    }
+
+    // 构建返回数据
+    const taskList = tasks.map(task => {
+      const latestExecution = executionsByTaskId.get(task.id);
+
+      // 计算任务状态
+      let status = task.status;
+      let progress = 0;
+      let lastExecutionTime: Date | null = null;
+
+      if (latestExecution) {
+        // 如果有执行记录，使用执行记录的状态
+        status = latestExecution.status;
+        lastExecutionTime = latestExecution.startTime;
+
+        // 计算进度（根据执行日志智能计算）
+        progress = this.calculateProgress(status, latestExecution.log);
+      }
+
+      return {
+        // 移除ID字段以提高安全性
+        name: task.name,
+        url: task.url,
+        status,
+        progress,
+        lastExecutionTime,
+        createdAt: task.createdAt,
+        endTime: task.endTime, // 改为 endTime
+        screenshotPath: task.screenshotPath,
+        latestExecution: latestExecution ? {
+          status: latestExecution.status,
+          log: latestExecution.log,
+          startTime: latestExecution.startTime,
+          endTime: latestExecution.endTime,
+          resultPath: latestExecution.resultPath, // 添加结果文件路径
+        } : null,
+      };
+    });
+
+    return {
+      data: taskList,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  async getExecutionResult(executionId: number, userId: number) {
+    // 获取执行记录
+    const execution = await this.executionRepository.findOne({
+      where: { id: executionId },
+      relations: ['task', 'task.user'],
+    });
+
+    if (!execution) {
+      throw new BadRequestException('执行记录不存在');
+    }
+
+    // 检查任务是否属于当前用户
+    if (execution.task.user.id !== userId) {
+      throw new BadRequestException('无权限访问此执行结果');
+    }
+
+    // 如果有结果文件路径，读取文件内容
+    if (execution.resultPath) {
+      const fs = require('fs').promises;
+      try {
+        const fileContent = await fs.readFile(execution.resultPath, 'utf-8');
+        const results = JSON.parse(fileContent);
+        return {
+          executionId: execution.id,
+          taskId: execution.task.id,
+          taskName: execution.task.name,
+          status: execution.status,
+          resultCount: results.length,
+          results,
+          createdAt: execution.startTime,
+        };
+      } catch (error) {
+        throw new InternalServerErrorException('读取结果文件失败');
+      }
+    }
+
+    return {
+      executionId: execution.id,
+      taskId: execution.task.id,
+      taskName: execution.task.name,
+      status: execution.status,
+      resultCount: 0,
+      results: [],
+      createdAt: execution.startTime,
+    };
   }
 }

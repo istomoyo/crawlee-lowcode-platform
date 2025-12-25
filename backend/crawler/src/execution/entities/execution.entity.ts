@@ -15,6 +15,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   ManyToOne,
+  JoinColumn,
 } from 'typeorm';
 import { Task } from '../../task/entities/task.entity';
 
@@ -23,7 +24,11 @@ export class Execution {
   @PrimaryGeneratedColumn()
   id: number;
 
+  @Column()
+  taskId: number;
+
   @ManyToOne(() => Task)
+  @JoinColumn({ name: 'taskId' })
   task: Task;
 
   @Column({ default: 'running' })
@@ -31,6 +36,9 @@ export class Execution {
 
   @Column('text', { nullable: true })
   log: string; // 执行日志 or 错误原因
+
+  @Column({ nullable: true })
+  resultPath: string; // 执行结果文件路径
 
   @CreateDateColumn()
   startTime: Date;

@@ -10,4 +10,3 @@ import { Execution } from '../execution/entities/execution.entity';
   providers: [ResultService],
 })
 export class ResultModule {}
-
