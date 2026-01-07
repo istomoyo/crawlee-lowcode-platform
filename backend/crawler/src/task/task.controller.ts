@@ -103,9 +103,6 @@ export class TaskController {
     @Query('limit') limit = 10,
     @Query('search') search?: string,
   ) {
-    console.log('headers.authorization =', req.headers.authorization);
-    console.log('req.user =', req.user);
-
     const user = req.user as { id: number };
     return this.taskService.getTaskList(user.id, {
       page: Number(page),

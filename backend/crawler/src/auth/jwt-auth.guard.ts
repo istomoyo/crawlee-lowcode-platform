@@ -1,9 +1,11 @@
 // auth/jwt-auth.guard.ts
-import { Injectable, ExecutionContext } from '@nestjs/common';
+import { Injectable, ExecutionContext, Logger } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 
 @Injectable()
 export class JwtAuthGuard extends AuthGuard('jwt') {
+  private readonly logger = new Logger(JwtAuthGuard.name);
+
   canActivate(context: ExecutionContext) {
     const request = context.switchToHttp().getRequest();
 
@@ -12,8 +14,6 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
     if (token) {
       request.headers['authorization'] = `Bearer ${token}`;
     }
-
-    console.log('JwtAuthGuard ==> 被触发了, token from cookie:', token);
 
     return super.canActivate(context);
   }

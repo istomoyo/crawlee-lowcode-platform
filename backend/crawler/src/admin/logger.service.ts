@@ -65,12 +65,7 @@ export class LoggerService {
 
       await this.logRepository.save(logEntry);
 
-      // 同时输出到控制台
-      console.log(`[DB LOG] ${new Date().toISOString()} [${level.toUpperCase()}] ${module}: ${message}`);
-      if (details) {
-        console.log(`[DB LOG DETAILS]`, details);
-      }
-
+      // 使用 NestJS Logger 输出到控制台
       const consoleLogger = new Logger(module);
       switch (level) {
         case LogLevel.ERROR:
@@ -88,7 +83,8 @@ export class LoggerService {
       }
     } catch (error) {
       // 如果日志记录失败，不应该影响主要业务逻辑
-      console.error('日志记录失败:', error);
+      const errorLogger = new Logger(LoggerService.name);
+      errorLogger.error('日志记录失败', error);
     }
   }
 

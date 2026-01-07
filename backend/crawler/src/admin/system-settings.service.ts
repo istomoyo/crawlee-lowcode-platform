@@ -32,10 +32,9 @@ export class SystemSettingsService {
           this.getSettingDescription(key as SettingKey),
         );
         await this.settingRepository.save(setting);
-        console.log(`[SETTINGS INIT] 初始化默认设置: ${key}`);
         this.logger.log(`初始化默认设置: ${key}`);
       } else {
-        console.log(`[SETTINGS INIT] 设置已存在: ${key}`);
+        this.logger.debug(`设置已存在: ${key}`);
       }
     }
   }

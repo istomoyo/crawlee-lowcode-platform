@@ -45,7 +45,10 @@ export class CrawleeEngineService {
       return markdown.trim();
     } catch (error) {
       // 转换失败时，退回到原始文本
-      console.error('Markdown 转换失败:', error);
+      // 静态方法中无法使用实例 logger，保留 console.error
+      if (typeof console !== 'undefined') {
+        console.error('Markdown 转换失败:', error);
+      }
       return html;
     }
   }
@@ -75,7 +78,7 @@ export class CrawleeEngineService {
       },
       async requestHandler({ request, page, response }) {
         // 请求处理逻辑会在addTaskToQueue中动态设置
-        console.log(`Processing ${request.url}`);
+        this.logger.debug(`Processing ${request.url}`);
       },
     });
 
@@ -366,7 +369,7 @@ export class CrawleeEngineService {
                 // 只提取所有非子节点的选择器（包括link类型的节点）
                 const linkSelectors = config.selectors.filter(s => !s.parentLink);
                 for (const selectorConfig of linkSelectors) {
-                  await CrawleeEngineService.extractDataFromElement(
+                  await this.extractDataFromElement(
                     baseElement,
                     selectorConfig,
                     itemData,
@@ -419,7 +422,7 @@ export class CrawleeEngineService {
                     parentLink: undefined // 清除parentLink，因为已经在子页面了
                   };
                   
-                  await CrawleeEngineService.extractDataFromSelector(
+                  await this.extractDataFromSelector(
                     page,
                     tempSelectorConfig,
                     itemData,
@@ -480,7 +483,7 @@ export class CrawleeEngineService {
               // 向后兼容：如果没有基础选择器，使用原有逻辑
               const extractedData: any = {};
               for (const selectorConfig of config.selectors) {
-                await CrawleeEngineService.extractDataFromSelector(
+                await this.extractDataFromSelector(
                   page,
                   selectorConfig,
                   extractedData,
@@ -625,7 +628,7 @@ export class CrawleeEngineService {
             await updateDetailedProgress(95, `截图生成完成`);
 
           } catch (error) {
-            console.error(`处理页面失败 ${request.url}:`, error);
+            this.logger.error(`处理页面失败 ${request.url}`, error);
             throw error;
           }
         },
@@ -760,7 +763,7 @@ export class CrawleeEngineService {
   /**
    * 从选择器提取数据
    */
-  private static async extractDataFromSelector(
+  private async extractDataFromSelector(
     page: any,
     selectorConfig: SelectorConfig,
     extractedData: any,
@@ -772,7 +775,7 @@ export class CrawleeEngineService {
 
       // 如果有parentLink，需要导航到链接页面
       if (parentLink) {
-        console.log(`字段 ${name}: 导航到父链接页面 ${parentLink}`);
+        this.logger.debug(`字段 ${name}: 导航到父链接页面 ${parentLink}`);
         await page.goto(parentLink, { waitUntil: 'networkidle' });
         targetPage = page;
       }
@@ -820,7 +823,7 @@ export class CrawleeEngineService {
               value = new URL(value, pageUrl).href;
             } catch (urlError) {
               // 如果URL转换失败，保持原值
-              console.warn(`Failed to resolve relative URL "${value}":`, urlError);
+              this.logger.warn(`Failed to resolve relative URL "${value}"`, urlError);
             }
           }
           break;
@@ -842,7 +845,7 @@ export class CrawleeEngineService {
               value = new URL(value, pageUrl).href;
             } catch (urlError) {
               // 如果URL转换失败，保持原值
-              console.warn(`Failed to resolve relative URL "${value}":`, urlError);
+              this.logger.warn(`Failed to resolve relative URL "${value}"`, urlError);
             }
           }
           break;
@@ -860,7 +863,7 @@ export class CrawleeEngineService {
   /**
    * 从指定元素中提取数据（相对于基础元素）
    */
-  private static async extractDataFromElement(
+  private async extractDataFromElement(
     baseElement: any,
     selectorConfig: SelectorConfig,
     extractedData: any,
@@ -885,7 +888,7 @@ export class CrawleeEngineService {
 
       // 调试：检查元素是否存在
       const count = await element.count();
-      console.log(`字段 ${name}: 选择器 "${selector}", 相对于基础元素找到 ${count} 个元素`);
+      this.logger.debug(`字段 ${name}: 选择器 "${selector}", 相对于基础元素找到 ${count} 个元素`);
 
       if (count === 0) {
         extractedData[name] = null;
@@ -918,7 +921,7 @@ export class CrawleeEngineService {
               value = new URL(value, pageUrl).href;
             } catch (urlError) {
               // 如果URL转换失败，保持原值
-              console.warn(`Failed to resolve relative URL "${value}":`, urlError);
+              this.logger.warn(`Failed to resolve relative URL "${value}"`, urlError);
             }
           }
           break;
@@ -940,7 +943,7 @@ export class CrawleeEngineService {
               value = new URL(value, pageUrl).href;
             } catch (urlError) {
               // 如果URL转换失败，保持原值
-              console.warn(`Failed to resolve relative URL "${value}":`, urlError);
+              this.logger.warn(`Failed to resolve relative URL "${value}"`, urlError);
             }
           }
           break;
@@ -949,9 +952,9 @@ export class CrawleeEngineService {
       }
 
       extractedData[name] = value ? value.trim() : null;
-      console.log(`字段 ${name}: 提取值 "${extractedData[name]}"`);
+      this.logger.debug(`字段 ${name}: 提取值 "${extractedData[name]}"`);
     } catch (error) {
-      console.error(`字段 ${name} 提取错误:`, error);
+      this.logger.error(`字段 ${name} 提取错误`, error);
       // 如果找不到元素，设为null但不抛出错误
       extractedData[name] = null;
     }

@@ -2,6 +2,7 @@ import {
   Injectable,
   InternalServerErrorException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import * as playwright from 'playwright';
 import {
@@ -94,6 +95,8 @@ export interface ParseResult {
 }
 @Injectable()
 export class TaskService {
+  private readonly logger = new Logger(TaskService.name);
+
   constructor(
     @InjectRepository(Task)
     private readonly taskRepository: Repository<Task>,
@@ -121,7 +124,7 @@ export class TaskService {
       const buffer = await page.screenshot({ fullPage: false });
       return buffer.toString('base64');
     } catch (e) {
-      console.error('截图失败:', e);
+      this.logger.error('截图失败', e);
       throw new InternalServerErrorException('截图失败');
     } finally {
       if (browser) await browser.close();
@@ -392,7 +395,7 @@ export class TaskService {
 
       return results;
     } catch (err) {
-      console.error('列表结构分析失败:', err);
+      this.logger.error('列表结构分析失败', err);
       throw new InternalServerErrorException('列表结构分析失败');
     } finally {
       if (browser) await browser.close();
@@ -400,7 +403,7 @@ export class TaskService {
   }
 
   async parseByXpath(url: string, xpath: string, waitSelector?: string, contentFormat: 'text' | 'html' | 'markdown' | 'smart' = 'text') {
-    console.log('parseByXpath called with contentFormat:', contentFormat);
+    this.logger.debug(`parseByXpath called with contentFormat: ${contentFormat}`);
 
     let browser: playwright.Browser | null = null;
 
@@ -409,7 +412,7 @@ export class TaskService {
       browser = stealth.browser;
       const page = stealth.page;
 
-      console.log(`Navigating to: ${url}`);
+      this.logger.debug(`Navigating to: ${url}`);
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
 
       // 等待额外时间让动态内容加载
@@ -419,11 +422,11 @@ export class TaskService {
       try {
         await page.waitForLoadState('networkidle', { timeout: 5000 });
       } catch (e) {
-        console.log('Network idle timeout, continuing...');
+        this.logger.debug('Network idle timeout, continuing...');
       }
 
       if (waitSelector) {
-        console.log(`Waiting for selector: ${waitSelector}`);
+        this.logger.debug(`Waiting for selector: ${waitSelector}`);
         await page
           .waitForSelector(waitSelector, { timeout: 5000 })
           .catch(() => null);
@@ -457,10 +460,13 @@ export class TaskService {
         };
       });
 
-      console.log('Page info:', pageInfo);
+      this.logger.debug('Page info:', pageInfo);
 
       const result = await page.evaluate(({ xpath, contentFormat }) => {
-        console.log(`Evaluating XPath: ${xpath}`);
+        // 浏览器端日志，保留用于调试
+        if (typeof console !== 'undefined') {
+          console.log(`Evaluating XPath: ${xpath}`);
+        }
         function getRelativeXPath(base: Element, el: Element): string {
           const parts: string[] = [];
           while (el && el !== base) {
@@ -521,7 +527,10 @@ export class TaskService {
 
         // 如果是markdown格式，直接转换第一个匹配的元素
         if (contentFormat === 'markdown') {
-          console.log(`Looking for markdown content with XPath: ${xpath}`);
+          // 浏览器端日志，保留用于调试
+          if (typeof console !== 'undefined') {
+            console.log(`Looking for markdown content with XPath: ${xpath}`);
+          }
 
           const firstElement = document.evaluate(
             xpath,
@@ -531,7 +540,10 @@ export class TaskService {
             null,
           ).singleNodeValue as HTMLElement | null;
 
-          console.log(`Markdown XPath result:`, firstElement ? firstElement.tagName : 'null');
+          // 浏览器端日志，保留用于调试
+          if (typeof console !== 'undefined') {
+            console.log(`Markdown XPath result:`, firstElement ? firstElement.tagName : 'null');
+          }
 
           if (!firstElement) {
             return null;
@@ -555,7 +567,10 @@ export class TaskService {
         }
 
         // 普通处理逻辑
-        console.log(`Looking for elements with XPath: ${xpath}`);
+        // 浏览器端日志，保留用于调试
+        if (typeof console !== 'undefined') {
+          console.log(`Looking for elements with XPath: ${xpath}`);
+        }
 
         const iterator = document.evaluate(
           xpath,
@@ -566,7 +581,10 @@ export class TaskService {
         );
 
         let el = iterator.iterateNext() as HTMLElement | null;
-        console.log(`First XPath result:`, el ? el.tagName : 'null');
+        // 浏览器端日志，保留用于调试
+        if (typeof console !== 'undefined') {
+          console.log(`First XPath result:`, el ? el.tagName : 'null');
+        }
 
         while (el) {
           const texts: any[] = [];
@@ -749,7 +767,7 @@ export class TaskService {
       if (!result) return { count: 0, items: null };
       return { count: 1, items: result };
     } catch (e) {
-      console.error('XPath 解析失败', e);
+      this.logger.error('XPath 解析失败', e);
       throw new InternalServerErrorException('XPath 解析失败');
     } finally {
       if (browser) await browser.close();
@@ -1129,7 +1147,7 @@ export class TaskService {
       if (!result) return { count: 0, items: null };
       return { count: 1, items: result };
     } catch (e) {
-      console.error('JSPath 解析失败', e);
+      this.logger.error('JSPath 解析失败', e);
       throw new InternalServerErrorException('JSPath 解析失败');
     } finally {
       if (browser) await browser.close();
@@ -1355,9 +1373,9 @@ export class TaskService {
       if (execution.resultPath) {
         try {
           await fs.unlink(execution.resultPath);
-          console.log(`删除结果文件: ${execution.resultPath}`);
+          this.logger.log(`删除结果文件: ${execution.resultPath}`);
         } catch (error) {
-          console.warn(`删除结果文件失败: ${execution.resultPath}`, error);
+          this.logger.warn(`删除结果文件失败: ${execution.resultPath}`, error);
         }
       }
     }
@@ -1367,9 +1385,9 @@ export class TaskService {
       try {
         const screenshotFullPath = `uploads/${task.screenshotPath}`;
         await fs.unlink(screenshotFullPath);
-        console.log(`删除截图文件: ${screenshotFullPath}`);
+        this.logger.log(`删除截图文件: ${screenshotFullPath}`);
       } catch (error) {
-        console.warn(`删除截图文件失败: uploads/${task.screenshotPath}`, error);
+        this.logger.warn(`删除截图文件失败: uploads/${task.screenshotPath}`, error);
       }
     }
 
@@ -1608,14 +1626,14 @@ export class TaskService {
 
   async getStatistics(userId: number) {
     try {
-      console.log('开始获取用户统计数据，userId:', userId);
+      this.logger.debug(`开始获取用户统计数据，userId: ${userId}`);
 
       // 获取用户的所有任务
       const tasks = await this.taskRepository.find({
         where: { user: { id: userId } },
         relations: ['user'],
       });
-      console.log('获取到任务数量:', tasks.length);
+      this.logger.debug(`获取到任务数量: ${tasks.length}`);
 
       // 获取用户的所有执行记录
       const executions = await this.executionRepository
@@ -1625,7 +1643,7 @@ export class TaskService {
         .where('user.id = :userId', { userId })
         .orderBy('execution.startTime', 'DESC')
         .getMany();
-      console.log('获取到执行记录数量:', executions.length);
+      this.logger.debug(`获取到执行记录数量: ${executions.length}`);
 
       // 计算基础统计
       const totalTasks = tasks.length;
@@ -1654,7 +1672,7 @@ export class TaskService {
         executions.slice(0, 10).map(async (execution) => {
           // 确保 execution.task 存在
           if (!execution.task) {
-            console.warn(`Execution ${execution.id} has no associated task`);
+            this.logger.warn(`Execution ${execution.id} has no associated task`);
             return null;
           }
 
@@ -1687,7 +1705,7 @@ export class TaskService {
         recentExecutions: filteredRecentExecutions,
       };
     } catch (error) {
-      console.error('获取统计数据失败:', error);
+      this.logger.error('获取统计数据失败', error);
       throw new InternalServerErrorException(`获取统计数据失败: ${error.message}`);
     }
   }
@@ -1715,7 +1733,7 @@ export class TaskService {
           execDate.setHours(0, 0, 0, 0);
           return execDate.getTime() === date.getTime();
         } catch (error) {
-          console.warn('Invalid startTime for execution:', exec.id, exec.startTime);
+          this.logger.warn(`Invalid startTime for execution: ${exec.id}, ${exec.startTime}`);
           return false;
         }
       });
@@ -1811,7 +1829,7 @@ export class TaskService {
         else if (seconds <= 600) acc.slow++;
         else acc.verySlow++;
       } catch (error) {
-        console.warn('Failed to calculate duration for execution:', exec.id, error);
+        this.logger.warn(`Failed to calculate duration for execution: ${exec.id}`, error);
         // 跳过这个执行记录
       }
 
@@ -1835,7 +1853,7 @@ export class TaskService {
           const config = JSON.parse(task.config);
           crawlerType = config.crawlerType || 'playwright';
         } catch (error) {
-          console.warn('Failed to parse task config:', task.id, error);
+          this.logger.warn(`Failed to parse task config: ${task.id}`, error);
           // 使用默认值
         }
       }
@@ -1865,7 +1883,7 @@ export class TaskService {
       const results = JSON.parse(fileContent);
       return Array.isArray(results) ? results.length : 0;
     } catch (error) {
-      console.warn(`读取结果文件失败 ${resultPath}:`, error);
+      this.logger.warn(`读取结果文件失败 ${resultPath}`, error);
       return 0;
     }
   }
