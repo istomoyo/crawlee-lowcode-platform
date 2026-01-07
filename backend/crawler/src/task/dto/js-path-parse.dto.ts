@@ -1,4 +1,4 @@
-import { IsUrl, IsString, IsOptional } from 'class-validator';
+import { IsUrl, IsString, IsOptional, IsBoolean } from 'class-validator';
 
 export class JsPathParseDto {
   @IsUrl()
@@ -7,6 +7,10 @@ export class JsPathParseDto {
 
   @IsString()
   jsPath: string;
+
+  @IsOptional()
+  @IsBoolean()
+  parseHtml?: boolean = true;
 
   @IsOptional()
   @IsString()

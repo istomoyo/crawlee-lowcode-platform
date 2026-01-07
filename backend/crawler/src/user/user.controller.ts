@@ -11,6 +11,7 @@ import {
   Query,
   Res,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { UserService } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { LoginUserDto } from './dto/login-user.dto';
@@ -34,7 +35,8 @@ import type { Response } from 'express';
 @Controller('user')
 export class UserController {
   constructor(private readonly userService: UserService) {}
-  // 发送验证码
+  // 发送验证码 - 限制：5次/分钟
+  @Throttle({ default: { limit: 5, ttl: 60 } })
   @SuccessMessage('发送邮件成功')
   @Post('send-code')
   sendCode(
@@ -45,14 +47,16 @@ export class UserController {
     return this.userService.sendVerifyCode(email, captchaId, captchaText);
   }
 
-  // user.controller.ts
+  // 注册 - 限制：3次/10分钟
+  @Throttle({ default: { limit: 3, ttl: 600 } })
   @SuccessMessage('注册成功')
   @Post('register')
   register(@Body() dto: CreateUserDto & { code: string }) {
     return this.userService.register(dto);
   }
 
-  // 登录
+  // 登录 - 限制：5次/15分钟（防止暴力破解）
+  @Throttle({ default: { limit: 5, ttl: 900 } })
   @SuccessMessage('登录成功')
   @Post('login')
   login(@Body() dto: LoginUserDto, @Res({ passthrough: true }) res: Response) {
@@ -123,7 +127,6 @@ export class UserController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   adminOnly(@Req() req) {
-    console.log(req.user);
     return { msg: '管理员可见' };
   }
 

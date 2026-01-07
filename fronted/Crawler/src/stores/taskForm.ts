@@ -31,6 +31,17 @@ export const useTaskFormStore = defineStore("taskForm", () => {
 
   const treeData = reactive<TreeNode[]>([]);
 
+  // 网站类型配置
+  const siteType = ref<{
+    value: string;
+    label: string;
+    icon: string;
+    description: string;
+    strategy: string;
+    defaultContentFormat: "text" | "html" | "markdown" | "smart";
+    articleDetectionEnabled: boolean;
+  } | null>(null);
+
   // 爬虫配置
   const crawlerConfig = reactive({
     // 基本设置
@@ -52,7 +63,6 @@ export const useTaskFormStore = defineStore("taskForm", () => {
     // 数据处理
     removeDuplicates: true,
     enableValidation: true,
-    outputFormat: "json",
     filenameTemplate: "results_{timestamp}",
 
     // 高级设置
@@ -76,14 +86,26 @@ export const useTaskFormStore = defineStore("taskForm", () => {
     const config: any = {
       crawlerType: 'playwright',
       urls: [form.url],
-      maxRequestsPerCrawl: 1,
+      maxRequestsPerCrawl: crawlerConfig.maxRequestsPerCrawl || 1,
       maxConcurrency: crawlerConfig.maxConcurrency,
       headless: crawlerConfig.headless,
       viewport: { width: 1920, height: 1080 },
-      waitForTimeout: crawlerConfig.timeout * 1000, // 转换为毫秒
+      waitForTimeout: crawlerConfig.timeout * 1000,
       navigationTimeout: crawlerConfig.timeout * 1000,
       userAgent: crawlerConfig.userAgent || undefined,
       proxyUrl: crawlerConfig.useProxy ? crawlerConfig.proxyUrl : undefined,
+      requestInterval: crawlerConfig.requestInterval,
+      maxRetries: crawlerConfig.maxRetries,
+      useCookie: crawlerConfig.useCookie,
+      cookieString: crawlerConfig.cookieString,
+      cookieDomain: crawlerConfig.cookieDomain,
+      proxyAuth: crawlerConfig.proxyAuth,
+      removeDuplicates: crawlerConfig.removeDuplicates,
+      enableValidation: crawlerConfig.enableValidation,
+      filenameTemplate: crawlerConfig.filenameTemplate,
+      disableImages: crawlerConfig.disableImages,
+      disableStyles: crawlerConfig.disableStyles,
+      customHeaders: crawlerConfig.customHeaders,
       ...paginationConfig,
       selectors,
     };
@@ -131,10 +153,16 @@ export const useTaskFormStore = defineStore("taskForm", () => {
     return {};
   }
 
-  function convertTreeToSelectors(nodes: TreeNode[], baseSelector?: string): Array<{
+  function convertTreeToSelectors(
+    nodes: TreeNode[],
+    baseSelector?: string,
+    parentLinkUrl?: string,
+  ): Array<{
     name: string;
     selector: string;
     type: string;
+    contentFormat?: 'text' | 'html' | 'markdown' | 'smart';
+    parentLink?: string; // 父链接URL，子节点应在此链接页面上执行
   }> {
     const selectors = [];
 
@@ -142,20 +170,41 @@ export const useTaskFormStore = defineStore("taskForm", () => {
       if (node.type === 'field' || node.type === 'image' || node.type === 'link') {
         let selector = node.selector || node.jsPath || '';
 
-        // 如果有基础选择器，保持相对XPath不变，让后端处理
-        // 前端不再预先组合路径，后端会使用baseSelector找到列表项，然后在每个项内使用相对路径查找字段
-
-        selectors.push({
+        const selectorConfig: any = {
           name: node.label,
           selector,
           type: node.type === 'field' ? 'text' :
                 node.type === 'link' ? 'link' : 'image',
-        });
+        };
+
+        // 文本字段带上内容格式配置，供后端爬虫使用
+        if (node.type === 'field' && node.contentFormat) {
+          selectorConfig.contentFormat = node.contentFormat;
+        }
+
+        // 只有子节点才需要设置 parentLink，link 类型的节点本身不需要 parentLink
+        if (parentLinkUrl) {
+          // 如果有父链接URL（表示这是链接的子节点），添加到配置中
+          selectorConfig.parentLink = parentLinkUrl;
+        }
+
+        selectors.push(selectorConfig);
       }
 
       // 递归处理子节点
       if (node.children && node.children.length > 0) {
-        selectors.push(...convertTreeToSelectors(node.children, baseSelector));
+        // 确定子节点的父链接URL
+        let childParentLinkUrl = parentLinkUrl; // 默认继承当前父链接
+
+        // 如果当前节点是链接节点，使用其名称作为子节点的父链接标识符
+        // 这样在后端处理时可以动态获取实际的链接值
+        if (node.type === 'link') {
+          childParentLinkUrl = node.label; // 使用链接节点的名称
+        }
+        // 注意：这里我们不传递undefined，如果没有找到链接URL就保持父级的URL
+        // 这样可以处理多层嵌套的情况
+
+        selectors.push(...convertTreeToSelectors(node.children, baseSelector, childParentLinkUrl));
       }
     }
 
@@ -167,12 +216,14 @@ export const useTaskFormStore = defineStore("taskForm", () => {
     form.url = "";
     selectedItem.value = null;
     treeData.length = 0;
+    siteType.value = null;
   }
 
   return {
     form,
     selectedItem,
     treeData,
+    siteType,
     crawlerConfig,
     buildConfig,
     resetForm,

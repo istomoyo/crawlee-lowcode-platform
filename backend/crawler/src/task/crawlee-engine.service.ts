@@ -13,6 +13,8 @@ import { CrawleeTaskConfig, SelectorConfig } from './dto/execute-task.dto';
 import { TaskGateway } from './task.gateway';
 import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
+import { FilePackageService } from './file-package.service';
+import TurndownService from 'turndown';
 
 interface CrawlerTask {
   taskId: number;
@@ -27,12 +29,34 @@ export class CrawleeEngineService {
   private isProcessing = false;
   private crawler: PlaywrightCrawler;
 
+  // 全局 Turndown 实例，用于将 HTML 转为 Markdown
+  private static turndownService = new TurndownService({
+    headingStyle: 'atx',
+    codeBlockStyle: 'fenced',
+    bulletListMarker: '-',
+    emDelimiter: '*',
+    strongDelimiter: '**',
+  });
+
+  private static convertHtmlToMarkdown(html: string | null | undefined): string | null {
+    if (!html) return null;
+    try {
+      const markdown = CrawleeEngineService.turndownService.turndown(html);
+      return markdown.trim();
+    } catch (error) {
+      // 转换失败时，退回到原始文本
+      console.error('Markdown 转换失败:', error);
+      return html;
+    }
+  }
+
   constructor(
     @InjectRepository(Task)
     private readonly taskRepository: Repository<Task>,
     @InjectRepository(Execution)
     private readonly executionRepository: Repository<Execution>,
     private readonly taskGateway: TaskGateway,
+    private readonly filePackageService: FilePackageService,
   ) {
     this.initializeCrawler();
   }
@@ -111,6 +135,12 @@ export class CrawleeEngineService {
     const { taskId, executionId, config } = crawlerTask;
     this.logger.log(`开始执行任务 ${taskId}, 执行ID: ${executionId}`);
 
+    // 声明变量用于统计信息
+    let totalExtractedItems = 0;
+    let totalValidItems = 0;
+    let screenshotRelativePath: string | null = null; // 在executeCrawlerTask范围内声明
+    let screenshotFilePath: string | null = null; // 在executeCrawlerTask范围内声明
+
     // 更新执行状态为运行中
     await this.updateExecutionStatus(
       executionId,
@@ -145,6 +175,7 @@ export class CrawleeEngineService {
 
       // 保存方法的引用以在箭头函数中使用
       const updateExecutionStatus = this.updateExecutionStatus.bind(this);
+      const updateTaskStatus = this.taskRepository.update.bind(this.taskRepository);
       const broadcastTaskUpdate = this.taskGateway.broadcastTaskUpdate.bind(
         this.taskGateway,
       );
@@ -166,29 +197,38 @@ export class CrawleeEngineService {
         async requestHandler({ request, page, response }) {
           const requestIndex = config.urls.indexOf(request.url) + 1;
           const totalRequests = config.urls.length;
-          const progress = Math.round((requestIndex / totalRequests) * 100);
-          const progressMessage = `正在处理请求 ${requestIndex}/${totalRequests}: ${request.url}`;
 
-          // 更新进度日志
-          await updateExecutionStatus(
-            executionId,
-            'running',
-            `${progressMessage} - 已处理 ${requestIndex - 1}/${totalRequests} 个请求`,
-          );
+          // 进度更新函数 - 提供更细粒度的进度反馈
+          const updateDetailedProgress = async (currentProgress: number, message: string) => {
+            // 计算全局进度：已完成的请求 + 当前请求的进度
+            const baseProgress = ((requestIndex - 1) / totalRequests) * 100;
+            const totalProgress = Math.min(100, Math.round(baseProgress + (currentProgress / totalRequests)));
 
-          // 广播任务进度更新
-          broadcastTaskUpdate({
-            taskId,
-            taskName: taskInfo?.name,
-            taskUrl: taskInfo?.url,
-            status: 'running',
-            progress,
-          });
+            await updateExecutionStatus(executionId, 'running', message);
+
+            broadcastTaskUpdate({
+              taskId,
+              taskName: taskInfo?.name,
+              taskUrl: taskInfo?.url,
+              status: 'running',
+              progress: totalProgress,
+            });
+          };
+
+          // 开始处理请求
+          await updateDetailedProgress(5, `开始处理请求 ${requestIndex}/${totalRequests}: ${request.url}`);
+
+          // 声明局部变量
+          let extractedItems: any[] = [];
+          let validItems: any[] = [];
 
           try {
             // 设置视口
             if (config.viewport) {
               await page.setViewportSize(config.viewport);
+              await updateDetailedProgress(10, `设置视口: ${config.viewport.width}x${config.viewport.height}`);
+            } else {
+              await updateDetailedProgress(10, `跳过视口设置`);
             }
 
             // 设置用户代理
@@ -196,6 +236,9 @@ export class CrawleeEngineService {
               await page.setExtraHTTPHeaders({
                 'User-Agent': config.userAgent,
               });
+              await updateDetailedProgress(15, `设置用户代理`);
+            } else {
+              await updateDetailedProgress(15, `跳过用户代理设置`);
             }
 
             // 等待选择器
@@ -203,18 +246,21 @@ export class CrawleeEngineService {
               await page.waitForSelector(config.waitForSelector, {
                 timeout: config.waitForTimeout || 30000,
               });
+              await updateDetailedProgress(25, `等待元素加载: ${config.waitForSelector}`);
+            } else {
+              await updateDetailedProgress(25, `跳过元素等待`);
             }
 
             // 滚动页面（处理懒加载）
             if (config.scrollEnabled) {
               await page.evaluate(
-                ({ scrollDistance, scrollDelay, maxScrollDistance }) => {
+                async ({ scrollDistance, scrollDelay, maxScrollDistance }) => {
                   let scrolled = 0;
                   while (scrolled < maxScrollDistance) {
                     window.scrollBy(0, scrollDistance);
                     scrolled += scrollDistance;
-                    // 等待一段时间
-                    return new Promise((resolve) =>
+                    // 等待一段时间，让内容加载
+                    await new Promise((resolve) =>
                       setTimeout(resolve, scrollDelay),
                     );
                   }
@@ -225,6 +271,11 @@ export class CrawleeEngineService {
                   maxScrollDistance: config.maxScrollDistance || 10000,
                 },
               );
+              // 滚动完成后，再等待一下让内容完全加载
+              await page.waitForTimeout(1000);
+              await updateDetailedProgress(45, `完成页面滚动加载`);
+            } else {
+              await updateDetailedProgress(45, `跳过页面滚动`);
             }
 
             // 等待页面加载完成 - 使用更宽松的策略
@@ -250,8 +301,9 @@ export class CrawleeEngineService {
               );
             }
 
-            // 额外等待一段时间，确保动态内容加载
+            // 等待页面完全加载
             await page.waitForTimeout(2000);
+            await updateDetailedProgress(55, `等待页面内容加载完成`);
 
             // 基础信息
             const pageData = {
@@ -261,39 +313,167 @@ export class CrawleeEngineService {
               crawledAt: new Date().toISOString(),
             };
 
-            // 根据选择器提取数据
-            let extractedItems: any[] = [];
+            // 开始数据提取
+            await updateDetailedProgress(65, `开始提取页面数据`);
 
-            if (config.baseSelector && config.selectors) {
+      if (config.baseSelector && config.selectors) {
               // 使用基础选择器找到所有项目
-              const baseElements = page.locator(config.baseSelector);
-              const itemCount = await baseElements.count();
+              // 处理XPath选择器：Playwright需要使用 xpath= 前缀
+              let baseElements;
+              if (config.baseSelector.startsWith('//') || config.baseSelector.startsWith('.//')) {
+                // XPath选择器
+                const xpathSelector = config.baseSelector.startsWith('.//') 
+                  ? config.baseSelector.substring(1) // 移除.前缀
+                  : config.baseSelector;
+                baseElements = page.locator(`xpath=${xpathSelector}`);
+                logger.log(`使用XPath基础选择器: ${xpathSelector}`);
+              } else {
+                // CSS选择器
+                baseElements = page.locator(config.baseSelector);
+                logger.log(`使用CSS基础选择器: ${config.baseSelector}`);
+              }
+              
+          const itemCount = await baseElements.count();
+        logger.log(`基础项总数: ${itemCount}, 提取上限: ${config.maxItems ?? itemCount}`);
 
-              logger.log(`找到 ${itemCount} 个基础元素`);
+        logger.log(`找到 ${itemCount} 个基础元素`);
 
               // 限制提取数量
-              const maxExtract = config.maxItems ? Math.min(itemCount, config.maxItems) : itemCount;
+        const maxExtract = config.maxItems ? Math.min(itemCount, config.maxItems) : itemCount;
+              logger.log(`基础项提取上限：${maxExtract}`);
 
-              for (let i = 0; i < maxExtract; i++) {
+        // 保存当前列表页面的URL，用于后续返回
+        const listPageUrl = page.url();
+        logger.log(`列表页面URL: ${listPageUrl}`);
+
+        // 第一步：先提取所有列表项的基本信息（不包含parentLink的字段）
+        const listItemsData: any[] = [];
+        for (let i = 0; i < maxExtract; i++) {
                 const itemData: any = {};
                 const baseElement = baseElements.nth(i);
+        logger.log(`正在提取第 ${i + 1} 条数据的基本信息 (基础项 ${itemCount} 的第 ${i + 1} 个)` );
 
                 // 调试：检查baseElement是否存在
-                const elementExists = await baseElement.count() > 0;
-                logger.log(`处理第 ${i + 1} 个元素，元素存在: ${elementExists}`);
+                const elementCount = await baseElement.count();
+                const elementExists = elementCount > 0;
+                logger.log(`处理第 ${i + 1} 个元素，元素存在: ${elementExists}, count: ${elementCount}`);
+                
+                if (!elementExists) {
+                  logger.warn(`第 ${i + 1} 个基础元素不存在，跳过`);
+                  continue; // 跳过不存在的元素
+                }
 
-                // 对每个字段，从对应的基础元素中提取
-                for (const selectorConfig of config.selectors) {
+                // 只提取所有非子节点的选择器（包括link类型的节点）
+                const linkSelectors = config.selectors.filter(s => !s.parentLink);
+                for (const selectorConfig of linkSelectors) {
                   await CrawleeEngineService.extractDataFromElement(
                     baseElement,
                     selectorConfig,
                     itemData,
+                    page,
                   );
                 }
 
-                logger.log(`第 ${i + 1} 个元素提取结果:`, itemData);
-                extractedItems.push(itemData);
+                logger.log(`第 ${i + 1} 个元素基本信息:`, itemData);
+                listItemsData.push(itemData);
               }
+
+        logger.log(`成功提取 ${listItemsData.length} 条列表项的基本信息`);
+
+        // 第二步：对每个列表项，如果需要提取parentLink字段，则导航到子链接提取
+        const childSelectors = config.selectors.filter(s => s.parentLink);
+        if (childSelectors.length > 0) {
+          logger.log(`需要提取 ${childSelectors.length} 个parentLink字段，开始逐个处理`);
+          
+          for (let i = 0; i < listItemsData.length; i++) {
+            const itemData = listItemsData[i];
+            logger.log(`处理第 ${i + 1}/${listItemsData.length} 个列表项的详细内容`);
+            
+            // 对每个parentLink字段进行处理
+            for (const selectorConfig of childSelectors) {
+              const linkFieldName = selectorConfig.parentLink;
+              if (!linkFieldName) {
+                itemData[selectorConfig.name] = null;
+                logger.warn(`字段 ${selectorConfig.name}: parentLink 为空`);
+                continue;
+              }
+
+              const linkUrl = itemData[linkFieldName];
+
+              if (linkUrl && typeof linkUrl === 'string') {
+                try {
+                  logger.log(`导航到子链接: ${linkUrl}`);
+                  
+                  // 导航到子链接页面
+                  await page.goto(linkUrl, { 
+                    waitUntil: 'domcontentloaded',
+                    timeout: config.navigationTimeout || 60000 
+                  });
+                  
+                  // 等待页面加载
+                  await page.waitForTimeout(2000);
+                  
+                  // 提取数据（使用绝对路径选择器，因为已经在子页面了）
+                  const tempSelectorConfig = {
+                    ...selectorConfig,
+                    parentLink: undefined // 清除parentLink，因为已经在子页面了
+                  };
+                  
+                  await CrawleeEngineService.extractDataFromSelector(
+                    page,
+                    tempSelectorConfig,
+                    itemData,
+                  );
+                  
+                  logger.log(`已提取字段 ${selectorConfig.name} 的值: ${itemData[selectorConfig.name]}`);
+                  
+                  // 导航回列表页面
+                  logger.log(`返回列表页面: ${listPageUrl}`);
+                  await page.goto(listPageUrl, { 
+                    waitUntil: 'domcontentloaded',
+                    timeout: config.navigationTimeout || 60000 
+                  });
+                  
+                  // 等待页面加载
+                  await page.waitForTimeout(1000);
+                  
+                  // 重新获取baseElements（因为导航后元素可能失效）
+                  if (config.baseSelector.startsWith('//') || config.baseSelector.startsWith('.//')) {
+                    const xpathSelector = config.baseSelector.startsWith('.//') 
+                      ? config.baseSelector.substring(1)
+                      : config.baseSelector;
+                    baseElements = page.locator(`xpath=${xpathSelector}`);
+                  } else {
+                    baseElements = page.locator(config.baseSelector);
+                  }
+                  
+                } catch (error) {
+                  logger.error(`提取字段 ${selectorConfig.name} 失败:`, error);
+                  itemData[selectorConfig.name] = null;
+                  
+                  // 如果出错，尝试返回列表页面
+                  try {
+                    await page.goto(listPageUrl, { 
+                      waitUntil: 'domcontentloaded',
+                      timeout: config.navigationTimeout || 60000 
+                    });
+                    await page.waitForTimeout(1000);
+                  } catch (navError) {
+                    logger.error(`返回列表页面失败:`, navError);
+                  }
+                }
+              } else {
+                itemData[selectorConfig.name] = null;
+                logger.warn(`字段 ${selectorConfig.name}: 找不到对应的链接字段 ${linkFieldName}`);
+              }
+            }
+            
+            logger.log(`第 ${i + 1} 个元素完整数据:`, itemData);
+          }
+        }
+
+        // 将所有列表项数据添加到extractedItems
+        extractedItems = listItemsData;
 
               logger.log(`成功提取 ${extractedItems.length} 条数据`);
             } else if (config.selectors) {
@@ -309,27 +489,6 @@ export class CrawleeEngineService {
               extractedItems = [extractedData];
             }
 
-            // 截图保存到文件系统
-            const screenshot = await page.screenshot({
-              fullPage: true,
-              type: 'png',
-            });
-
-            // 直接保存截图到文件系统
-            const screenshotFilename = `task-${taskId}-execution-${executionId}-screenshot.png`;
-            const screenshotFilePath = `uploads/screenshots/${screenshotFilename}`;
-            const screenshotRelativePath = `screenshots/${screenshotFilename}`;
-
-            // 确保目录存在
-            const screenshotDir = 'uploads/screenshots';
-            await fs.mkdir(screenshotDir, { recursive: true });
-
-            // 保存截图
-            await fs.writeFile(screenshotFilePath, screenshot);
-
-            // 保存截图key到数据中（用于兼容性）
-            const screenshotKey = `screenshot-${request.id}`;
-            await keyValueStore.setValue(screenshotKey, screenshot);
 
             // 检查数据总量限制
             let currentCount = await dataset
@@ -343,21 +502,128 @@ export class CrawleeEngineService {
               return; // 跳过数据保存，但不中断整个任务
             }
 
-            // 保存多个数据项
-            for (const itemData of extractedItems) {
+            // 过滤和验证数据项
+            validItems = extractedItems.filter(itemData => {
+              // 检查是否所有字段都为空或null
+              const hasValidField = Object.values(itemData).some(value =>
+                value !== null && value !== undefined && value !== '' && value !== 'null'
+              );
+
+              if (!hasValidField) {
+                logger.log(`过滤掉空数据项:`, itemData);
+                return false;
+              }
+
+              return true;
+            });
+
+            // 检查是否有任何有效数据
+            if (validItems.length === 0) {
+              const errorMessage = `任务失败：未找到任何有效数据，所有提取的字段都为空`;
+              logger.error(errorMessage);
+              throw new Error(errorMessage);
+            }
+
+            // 获取所有image类型的字段名，用于后续处理
+            const imageFields = (config.selectors || [])
+              .filter(selector => selector.type === 'image')
+              .map(selector => selector.name);
+
+            // 保存过滤后的数据项
+            for (const itemData of validItems) {
               if (config.maxItems && currentCount >= config.maxItems) {
                 break; // 达到限制，停止保存
               }
 
-              const result = {
-                ...pageData,
-                ...itemData,
-                screenshotKey,
-              };
+              // 在JSON模式下，确保image字段保存的是图片对应的URL
+              // 遍历所有image类型字段，确保值是有效的URL字符串
+              for (const imageField of imageFields) {
+                if (itemData.hasOwnProperty(imageField)) {
+                  const value = itemData[imageField];
+                  // 确保值是有效的URL字符串（以http://或https://开头）
+                  if (value && typeof value === 'string') {
+                    const trimmedValue = value.trim();
+                    // 验证是否为有效的URL格式
+                    if (trimmedValue && (trimmedValue.startsWith('http://') || trimmedValue.startsWith('https://'))) {
+                      // 值已经是有效的URL，保存URL字符串
+                      itemData[imageField] = trimmedValue;
+                    } else {
+                      // 如果不是有效的URL格式，设置为null
+                      itemData[imageField] = null;
+                      logger.log(`字段 ${imageField} 的值 "${trimmedValue}" 不是有效的URL格式，已设置为null`);
+                    }
+                  } else if (value !== null && value !== undefined) {
+                    // 如果不是字符串类型，设置为null
+                    itemData[imageField] = null;
+                    logger.log(`字段 ${imageField} 的值不是字符串类型，已设置为null`);
+                  }
+                }
+              }
 
-              await dataset.pushData(result);
+              // 只保存用户自定义的选择器数据，不添加任何无关字段
+              await dataset.pushData(itemData);
               currentCount++;
             }
+
+            logger.log(`原始提取 ${extractedItems.length} 条数据，过滤后保存 ${validItems.length} 条有效数据`);
+
+            // 累加到总统计
+            totalExtractedItems += extractedItems.length;
+            totalValidItems += validItems.length;
+
+            // 数据保存完成，开始截图
+            await updateDetailedProgress(85, `数据保存完成，开始生成截图`);
+
+            // 只保存第一个URL（base URL）的截图路径到数据库
+            if (requestIndex === 1) {
+              // 确保在列表页面截图（如果提取了parentLink字段，可能已经导航到子链接）
+              // 对于baseSelector的情况，确保回到原始列表页面
+              if (config.baseSelector && page.url() !== request.url) {
+                logger.log(`当前不在列表页面，导航回列表页面进行截图: ${request.url}`);
+                await page.goto(request.url, { 
+                  waitUntil: 'domcontentloaded',
+                  timeout: config.navigationTimeout || 60000 
+                });
+                await page.waitForTimeout(2000);
+              }
+
+              // 截图保存到文件系统
+              const screenshot = await page.screenshot({
+                fullPage: true,
+                type: 'png',
+              });
+
+              // 直接保存截图到文件系统
+              // 使用taskId和executionId确保文件名唯一，防止同名冲突
+              const screenshotFilename = `task_${taskId}_exec_${executionId}_screenshot.png`;
+              screenshotFilePath = `uploads/screenshots/${screenshotFilename}`;
+              screenshotRelativePath = `screenshots/${screenshotFilename}`;
+
+              // 确保目录存在
+              const screenshotDir = 'uploads/screenshots';
+              await fs.mkdir(screenshotDir, { recursive: true });
+
+              // 保存截图
+              await fs.writeFile(screenshotFilePath, screenshot);
+              
+              logger.log(`已保存base URL截图: ${screenshotRelativePath}`);
+              
+              // 保存截图key到数据中（用于兼容性）
+              const screenshotKey = `screenshot-${request.id}`;
+              await keyValueStore.setValue(screenshotKey, screenshot);
+            } else {
+              // 对于非base URL，也保存截图到keyValueStore
+              const screenshot = await page.screenshot({
+                fullPage: true,
+                type: 'png',
+              });
+              const screenshotKey = `screenshot-${request.id}`;
+              await keyValueStore.setValue(screenshotKey, screenshot);
+              logger.log(`跳过非base URL的截图保存 (请求 ${requestIndex}/${totalRequests})`);
+            }
+
+            await updateDetailedProgress(95, `截图生成完成`);
+
           } catch (error) {
             console.error(`处理页面失败 ${request.url}:`, error);
             throw error;
@@ -376,12 +642,19 @@ export class CrawleeEngineService {
       const allData = await dataset.getData();
       const itemCount = allData.items.length;
 
-      // 保存结果到JSON文件
-      const resultFilename = `task-${taskId}-execution-${executionId}-results.json`;
+      // 如果最终结果数组长度为 0，视为任务失败
+      if (Array.isArray(allData?.items) && allData.items.length === 0) {
+        const errorMessage = `任务失败：未收集到任何有效数据（最终结果数组长度为 0）`;
+        this.logger.error(errorMessage);
+        throw new Error(errorMessage);
+      }
+
+      // 统一保存为JSON文件
+      const path = require('path');
+      const resultFilename = `task_${taskId}_exec_${executionId}_results.json`;
       const resultFilePath = `uploads/results/${resultFilename}`;
 
       // 确保目录存在
-      const path = require('path');
       const resultDir = path.dirname(resultFilePath);
       await fs.mkdir(resultDir, { recursive: true });
 
@@ -395,30 +668,33 @@ export class CrawleeEngineService {
 
       // 更新执行状态为成功
       const totalRequests = config.urls.length;
-      let resultMessage = `执行成功，已处理 ${totalRequests}/${totalRequests} 个请求，收集 ${itemCount} 条数据`;
+      const filteredItemCount = totalValidItems; // 使用过滤后的数据数量
+      let resultMessage = `执行成功，已处理 ${totalRequests}/${totalRequests} 个请求，收集 ${filteredItemCount} 条有效数据`;
 
-      if (config.maxItems && itemCount >= config.maxItems) {
+      if (config.maxItems && filteredItemCount >= config.maxItems) {
         resultMessage += ` (达到最大数量限制 ${config.maxItems})`;
+      }
+
+      if (totalExtractedItems > totalValidItems) {
+        resultMessage += ` (已过滤 ${totalExtractedItems - totalValidItems} 条空数据)`;
       }
 
       await this.updateExecutionStatus(executionId, 'success', resultMessage);
 
       // 更新任务的截图路径（截图已在requestHandler中保存）
       try {
-        const screenshotFilename = `task-${taskId}-execution-${executionId}-screenshot.png`;
-        const screenshotFilePath = `uploads/screenshots/${screenshotFilename}`;
-        const screenshotRelativePath = `screenshots/${screenshotFilename}`;
-
+        logger.log(`准备更新截图路径 - screenshotFilePath: ${screenshotFilePath}, screenshotRelativePath: ${screenshotRelativePath}`);
+        
         // 检查文件是否存在
-        if (existsSync(screenshotFilePath)) {
+        if (screenshotFilePath && existsSync(screenshotFilePath)) {
           // 更新任务的screenshotPath（保存相对路径）
           await this.taskRepository.update(taskId, {
-            screenshotPath: screenshotRelativePath,
+            screenshotPath: screenshotRelativePath ?? undefined,
           });
 
-          logger.log(`截图路径已更新: ${screenshotRelativePath}`);
+          logger.log(`截图路径已更新到数据库: ${screenshotRelativePath}`);
         } else {
-          logger.warn(`截图文件不存在: ${screenshotFilePath}`);
+          logger.warn(`截图文件不存在或路径为空 - screenshotFilePath: ${screenshotFilePath}, exists: ${screenshotFilePath ? existsSync(screenshotFilePath) : false}`);
         }
       } catch (error) {
         logger.error('更新截图路径失败:', error);
@@ -489,22 +765,86 @@ export class CrawleeEngineService {
     selectorConfig: SelectorConfig,
     extractedData: any,
   ) {
-    const { name, selector, type } = selectorConfig;
+    const { name, selector, type, parentLink, contentFormat } = selectorConfig;
 
     try {
+      let targetPage = page;
+
+      // 如果有parentLink，需要导航到链接页面
+      if (parentLink) {
+        console.log(`字段 ${name}: 导航到父链接页面 ${parentLink}`);
+        await page.goto(parentLink, { waitUntil: 'networkidle' });
+        targetPage = page;
+      }
+
+      // 处理不同类型的选择器，转换为 Playwright 支持的格式
+      let finalSelector: string;
+      if (selector.startsWith('.//')) {
+        // XPath相对路径：转换为绝对路径
+        const xpathSelector = selector.substring(1); // 移除.前缀，变成 //
+        finalSelector = `xpath=${xpathSelector}`;
+      } else if (selector.startsWith('//')) {
+        // XPath绝对路径
+        finalSelector = `xpath=${selector}`;
+      } else {
+        // CSS选择器或其他
+        finalSelector = selector;
+      }
+
       // 简化逻辑：每个选择器只提取一个值，如果找不到则设为null
-      const element = page.locator(selector).first();
-      let value;
+      const element = targetPage.locator(finalSelector).first();
+      let value: string | null = null;
 
       switch (type) {
-        case 'text':
-          value = await element.textContent();
+        case 'text': {
+          const format = contentFormat || 'text';
+          if (format === 'html' || format === 'markdown' || format === 'smart') {
+            // 先拿到元素 HTML，再根据配置决定是否转为 Markdown
+            const html = await element.innerHTML();
+            if (format === 'markdown' || format === 'smart') {
+              value = CrawleeEngineService.convertHtmlToMarkdown(html);
+            } else {
+              value = html;
+            }
+          } else {
+            value = await element.textContent();
+          }
           break;
+        }
         case 'link':
           value = await element.getAttribute('href');
+          // 将相对URL转换为绝对URL
+          if (value) {
+            try {
+              const pageUrl = page.url();
+              value = new URL(value, pageUrl).href;
+            } catch (urlError) {
+              // 如果URL转换失败，保持原值
+              console.warn(`Failed to resolve relative URL "${value}":`, urlError);
+            }
+          }
           break;
         case 'image':
+          // 先尝试获取 src 属性
           value = await element.getAttribute('src');
+          // 如果 src 为空，尝试获取 data-src（懒加载图片）
+          if (!value) {
+            value = await element.getAttribute('data-src');
+          }
+          // 如果还是为空，尝试获取 data-original（另一种懒加载方式）
+          if (!value) {
+            value = await element.getAttribute('data-original');
+          }
+          // 将相对URL转换为绝对URL
+          if (value) {
+            try {
+              const pageUrl = page.url();
+              value = new URL(value, pageUrl).href;
+            } catch (urlError) {
+              // 如果URL转换失败，保持原值
+              console.warn(`Failed to resolve relative URL "${value}":`, urlError);
+            }
+          }
           break;
         default:
           value = await element.textContent();
@@ -518,51 +858,91 @@ export class CrawleeEngineService {
   }
 
   /**
-   * 从指定元素中提取数据
+   * 从指定元素中提取数据（相对于基础元素）
    */
   private static async extractDataFromElement(
     baseElement: any,
     selectorConfig: SelectorConfig,
     extractedData: any,
+    page: any,
   ) {
-    const { name, selector, type } = selectorConfig;
+    const { name, selector, type, contentFormat } = selectorConfig;
 
     try {
       let element;
 
       // 处理不同类型的选择器
       if (selector.startsWith('.//')) {
-        // XPath相对路径：转换为绝对XPath（相对于baseElement）
-        const xpathSelector = selector.substring(1); // 移除.前缀，变成 //...
-        element = baseElement.locator(`xpath=${xpathSelector}`).first();
+        // XPath相对路径：相对于baseElement，保留.//前缀
+        element = baseElement.locator(`xpath=${selector}`).first();
       } else if (selector.startsWith('//')) {
-        // XPath绝对路径：相对于baseElement
+        // XPath绝对路径：相对于baseElement（但在baseElement上下文中，//会从baseElement开始查找）
         element = baseElement.locator(`xpath=${selector}`).first();
       } else {
-        // CSS选择器或其他
+        // CSS选择器或其他：相对于baseElement
         element = baseElement.locator(selector).first();
       }
 
       // 调试：检查元素是否存在
       const count = await element.count();
-      console.log(`字段 ${name}: 原始选择器 "${selector}", 找到元素数量: ${count}`);
+      console.log(`字段 ${name}: 选择器 "${selector}", 相对于基础元素找到 ${count} 个元素`);
 
       if (count === 0) {
         extractedData[name] = null;
         return;
       }
 
-      let value;
+      let value: string | null = null;
 
       switch (type) {
-        case 'text':
-          value = await element.textContent();
+        case 'text': {
+          const format = contentFormat || 'text';
+          if (format === 'html' || format === 'markdown' || format === 'smart') {
+            const html = await element.innerHTML();
+            if (format === 'markdown' || format === 'smart') {
+              value = CrawleeEngineService.convertHtmlToMarkdown(html);
+            } else {
+              value = html;
+            }
+          } else {
+            value = await element.textContent();
+          }
           break;
+        }
         case 'link':
           value = await element.getAttribute('href');
+          // 将相对URL转换为绝对URL
+          if (value) {
+            try {
+              const pageUrl = page.url();
+              value = new URL(value, pageUrl).href;
+            } catch (urlError) {
+              // 如果URL转换失败，保持原值
+              console.warn(`Failed to resolve relative URL "${value}":`, urlError);
+            }
+          }
           break;
         case 'image':
+          // 先尝试获取 src 属性
           value = await element.getAttribute('src');
+          // 如果 src 为空，尝试获取 data-src（懒加载图片）
+          if (!value) {
+            value = await element.getAttribute('data-src');
+          }
+          // 如果还是为空，尝试获取 data-original（另一种懒加载方式）
+          if (!value) {
+            value = await element.getAttribute('data-original');
+          }
+          // 将相对URL转换为绝对URL
+          if (value) {
+            try {
+              const pageUrl = page.url();
+              value = new URL(value, pageUrl).href;
+            } catch (urlError) {
+              // 如果URL转换失败，保持原值
+              console.warn(`Failed to resolve relative URL "${value}":`, urlError);
+            }
+          }
           break;
         default:
           value = await element.textContent();

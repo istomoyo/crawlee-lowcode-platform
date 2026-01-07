@@ -107,7 +107,7 @@
         </RouterLink>
       </div>
     </div>
-    <div class="w-full h-screen min-w-0">
+    <div class="w-full h-screen min-w-0 overflow-auto">
       <router-view />
     </div>
   </div>
@@ -138,7 +138,8 @@ interface MenuItem {
 }
 
 // 动态菜单数组
-const menu: MenuItem[] = [
+const menu = computed<MenuItem[]>(() => {
+  const baseMenu: MenuItem[] = [
   {
     label: "用户任务",
     children: [
@@ -158,10 +159,47 @@ const menu: MenuItem[] = [
     label: "账户",
     children: [
       { label: "个人信息", path: "/account/profile" },
+        {
+          label: "数据统计",
+          path: "/crawleer/statistics",
+          class: "icon-[mingcute--chart-line-fill]",
+        },
       { label: "Logout" },
     ],
   },
 ];
+
+  // 只有管理员才显示管理员菜单
+  if (userStore.user?.role === 'admin') {
+    baseMenu.splice(1, 0, {
+      label: "管理员",
+      children: [
+        {
+          label: "用户管理",
+          path: "/admin/users",
+          class: "icon-[mingcute--user-4-fill]",
+        },
+        {
+          label: "任务监控",
+          path: "/admin/tasks",
+          class: "icon-[mingcute--monitor-fill]",
+        },
+        {
+          label: "系统日志",
+          path: "/admin/logs",
+          class: "icon-[mingcute--file-text-fill]",
+        },
+        {
+          label: "系统设置",
+          path: "/admin/settings",
+          class: "icon-[mingcute--settings-3-fill]",
+        },
+      ],
+    });
+  }
+
+  return baseMenu;
+});
 
 // 判断当前路由是否匹配
 const isActive = (path?: string) => path && route.path.startsWith(path);

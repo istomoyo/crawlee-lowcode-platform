@@ -1,5 +1,5 @@
 // dto/xpath-parse.dto.ts
-import { IsString, IsUrl, IsBoolean, IsOptional } from 'class-validator';
+import { IsString, IsUrl, IsEnum, IsOptional } from 'class-validator';
 
 export class XpathParseDto {
   @IsUrl()
@@ -7,6 +7,10 @@ export class XpathParseDto {
 
   @IsString()
   xpath: string;
+
+  @IsOptional()
+  @IsEnum(['text', 'html', 'markdown', 'smart'])
+  contentFormat?: 'text' | 'html' | 'markdown' | 'smart' = 'text';
 
   @IsOptional()
   includeShadow?: boolean;

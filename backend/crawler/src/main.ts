@@ -4,42 +4,59 @@ dotenv.config();
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { join } from 'path';
 import { NestExpressApplication } from '@nestjs/platform-express';
-import cookieParser from 'cookie-parser'; // ✅ 默认导入
+import cookieParser from 'cookie-parser';
 import { IoAdapter } from '@nestjs/platform-socket.io';
+import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  const configService = app.get(ConfigService);
 
   // 启用WebSocket适配器
   app.useWebSocketAdapter(new IoAdapter(app));
 
-  // 启用CORS
+  // 优化CORS配置
   app.enableCors({
-    origin: true, // 在生产环境中应该更严格
+    origin: configService.get('cors.origins'),
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   });
 
   app.use(cookieParser());
   app.useGlobalPipes(
     new ValidationPipe({
-      whitelist: true, // 自动过滤未在 DTO 中定义的字段
-      forbidNonWhitelisted: true, // 传入不存在字段会报错
-      transform: true, // 自动类型转换（例如 string → number）
+      whitelist: true,
+      forbidNonWhitelisted: true,
+      transform: true,
     }),
   );
+
   // 设置静态资源访问
   app.useStaticAssets(join(__dirname, '..', 'uploads'), { prefix: '/uploads' });
 
-  // 全局响应拦截器
-  // app.useGlobalInterceptors(new ResponseInterceptor());
+  // Swagger API 文档配置
+  const config = new DocumentBuilder()
+    .setTitle('Crawlee Low-Code Platform API')
+    .setDescription('基于 Crawlee 的低代码爬虫平台 API 文档')
+    .setVersion('1.0')
+    .addBearerAuth()
+    .addCookieAuth('token')
+    .build();
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('api', app, document);
 
   // 全局异常拦截器
   app.useGlobalFilters(new HttpExceptionFilter());
 
-  await app.listen(process.env.PORT ?? 3000);
+  const port = configService.get('server.port');
+  await app.listen(port);
+  console.log(`Application is running on: http://localhost:${port}`);
+  console.log(`Swagger API docs: http://localhost:${port}/api`);
 }
 bootstrap();

@@ -171,13 +171,6 @@
             <span class="text-sm text-gray-500 ml-2">对爬取数据进行基本验证</span>
           </el-form-item>
 
-          <el-form-item label="输出格式">
-            <el-radio-group v-model="config.outputFormat">
-              <el-radio label="json">JSON</el-radio>
-              <el-radio label="csv">CSV</el-radio>
-              <el-radio label="excel">Excel</el-radio>
-            </el-radio-group>
-          </el-form-item>
 
           <el-form-item label="文件名模板">
             <el-input

@@ -59,6 +59,7 @@ export interface XpathParseRes {
 export function xpathParseApi(data: {
   url: string;
   xpath: string;
+  contentFormat?: "text" | "html" | "markdown" | "smart";
 }): Promise<XpathParseRes> {
   return request.post("/api/task/xpath-parse", data);
 }
@@ -83,9 +84,11 @@ export function jsPathParseApi(data:{
   url: string;
   jsPath: string;
   waitSelector?: string;
-}): Promise<XpathMatchRes> {
+  contentFormat?: "text" | "html" | "markdown" | "smart";
+}): Promise<XpathParseRes> {
   return request.post("/api/task/jspath-parse", data);
 }
+
 
 // =======================
 // XPath 解析所有结果（返回数组）
@@ -135,6 +138,11 @@ export interface SelectorConfig {
   type: 'text' | 'link' | 'image';
   multiple?: boolean;
   required?: boolean;
+  // 内容格式（仅对 text 类型有效）：text / html / markdown / smart
+  contentFormat?: 'text' | 'html' | 'markdown' | 'smart';
+  // Optional: used for navigating to child pages via an associated link
+  // (e.g., when a value on a list item points to a detail page)
+  parentLink?: string;
 }
 
 export interface ExecuteTaskReq {
@@ -182,23 +190,8 @@ export function getEngineStatusApi(): Promise<EngineStatusRes> {
 // =======================
 // 获取任务列表
 // =======================
-export interface TaskItem {
-  name: string;
-  url: string;
-  status: 'pending' | 'running' | 'success' | 'failed';
-  progress: number;
-  lastExecutionTime: string | null;
-  createdAt: string;
-  endTime: string | null;
-  screenshotPath?: string;
-  latestExecution: {
-    status: string;
-    log: string;
-    startTime: string;
-    endTime: string | null;
-    resultPath?: string;
-  } | null;
-}
+// 导入统一的TaskItem类型
+export type { TaskItem } from "@/types/task";
 
 export interface TaskListRes {
   data: TaskItem[];
@@ -238,4 +231,87 @@ export function getExecutionResultApi(executionId: number): Promise<{
   createdAt: string;
 }> {
   return request.get(`/api/task/execution-result/${executionId}`);
+}
+
+// =======================
+// 获取统计数据
+// =======================
+export interface StatisticsData {
+  totalTasks: number;
+  successTasks: number;
+  runningTasks: number;
+  failedTasks: number;
+  successRate: number;
+  trendData: Array<{
+    day: string;
+    success: number;
+    failed: number;
+    total: number;
+  }>;
+  successRateData: Array<{
+    day: string;
+    rate: number;
+  }>;
+  dataDistribution: Array<{
+    name: string;
+    value: number;
+    color: string;
+  }>;
+  timeDistribution: Array<{
+    name: string;
+    value: number;
+    color: string;
+  }>;
+  taskTypeDistribution: Array<{
+    name: string;
+    value: number;
+    color: string;
+  }>;
+  recentExecutions: Array<{
+    id: number;
+    taskName: string;
+    url: string;
+    status: string;
+    resultCount: number;
+    createdAt: string;
+  }>;
+}
+
+export function getStatisticsApi(): Promise<StatisticsData> {
+  return request.get('/api/task/statistics');
+}
+
+// =======================
+// 打包执行结果
+// =======================
+export interface PackageResultReq {
+  packageConfig: {
+    structure?: {
+      images?: string;
+      files?: string;
+      texts?: string;
+      data?: string;
+    };
+    download?: {
+      images?: boolean;
+      files?: boolean;
+      texts?: boolean;
+      maxFileSize?: number;
+      timeout?: number;
+    };
+    fieldMapping?: {
+      imageFields?: string[];
+      fileFields?: string[];
+      textFields?: string[];
+    };
+  };
+}
+
+export interface PackageResultRes {
+  message: string;
+  packagePath: string;
+}
+
+export function packageResultApi(executionId: number, packageConfig: PackageResultReq['packageConfig']): Promise<PackageResultRes> {
+  return request.post(`/api/task/package-result/${executionId}`, { packageConfig });
 }

@@ -28,7 +28,7 @@
         v-model="editableJson"
         type="textarea"
         :rows="20"
-        placeholder="请输入 JSON 配置..."
+        placeholder="请输入 JSON 配置，或粘贴从任务列表复制的配置（会自动转换格式）..."
         class="json-editor w-full flex-1"
         @input="handleJsonChange"
       />
@@ -48,7 +48,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { useTaskFormStore } from "@/stores/taskForm";
 import { ElMessage } from "element-plus";
@@ -117,6 +117,13 @@ const generateFromSteps = () => {
   ElMessage.success("已从步骤生成配置");
 };
 
+// 组件挂载时自动从步骤生成配置
+onMounted(() => {
+  if (!editableJson.value || editableJson.value.trim() === '') {
+    generateFromSteps();
+  }
+});
+
 // 验证 JSON 格式
 const validateJsonFormat = () => {
   if (!editableJson.value.trim()) {
@@ -135,9 +142,30 @@ const validateJsonFormat = () => {
   }
 };
 
-// 处理 JSON 变化
+// 处理 JSON 变化，自动检测并转换从TaskList复制的配置格式
 const handleJsonChange = () => {
   validateJsonFormat();
+  
+  // 检测是否是从TaskList复制的配置格式，如果是则自动转换
+  if (editableJson.value.trim()) {
+    try {
+      const config = JSON.parse(editableJson.value);
+      
+      // 如果是从TaskList复制的格式（包含config字段），自动转换
+      if (config.config && typeof config.config === 'object' && config.name && config.url) {
+        const convertedConfig = {
+          name: config.name,
+          url: config.url,
+          ...config.config,
+        };
+        editableJson.value = JSON.stringify(convertedConfig, null, 2);
+        validateJsonFormat();
+        ElMessage.success("已自动转换粘贴的配置格式");
+      }
+    } catch (error) {
+      // 如果解析失败，不做处理
+    }
+  }
 };
 
 // 监听 prettyJson 变化，自动更新编辑器（当步骤配置改变时）
@@ -177,7 +205,20 @@ async function runCrawler() {
       return;
     }
 
-    const config = JSON.parse(editableJson.value);
+    let config = JSON.parse(editableJson.value);
+
+    // 处理从TaskList复制的配置格式
+    // 如果配置包含嵌套的config字段（从TaskList复制粘贴的格式），则提取它
+    if (config.config && typeof config.config === 'object') {
+      // 从TaskList复制的格式：{ name, url, config: {...}, script }
+      // 需要提取config字段，并保留name和url
+      const extractedConfig = {
+        name: config.name,
+        url: config.url,
+        ...config.config,
+      };
+      config = extractedConfig;
+    }
 
     // 验证必需字段
     if (!config.name || !config.url) {

@@ -14,6 +14,7 @@
     "animate.css": "^4.1.1",
     "axios": "^1.13.2",
     "cropperjs": "^1.6.2",
+    "echarts": "^6.0.0",
     "element-plus": "^2.12.0",
     "pinia": "^3.0.4",
     "socket.io-client": "^4.7.5",

@@ -17,8 +17,10 @@ import {
   PrimaryGeneratedColumn,
   Column,
   ManyToOne,
+  JoinColumn,
   CreateDateColumn,
   UpdateDateColumn,
+  Unique,
 } from 'typeorm';
 import { User } from '../../user/entities/user.entity';
 @Entity()
@@ -41,11 +43,15 @@ export class Task {
   @Column({ default: 'pending' })
   status: string; // pending | running | success | failed
 
-  @ManyToOne(() => User)
-  user: User;
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'userId' })
+  user?: User;
 
   @Column({ nullable: true })
-  screenshotPath: string; // 爬取首页截图路径
+  userId?: number;
+
+  @Column({ nullable: true })
+  screenshotPath?: string; // 爬取首页截图路径
 
   @CreateDateColumn()
   createdAt: Date;

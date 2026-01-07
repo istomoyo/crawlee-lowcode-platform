@@ -15,7 +15,14 @@
       :reserve-selection="true"
     />
 
-    <el-table-column prop="label" label="属性名" width="200" />
+    <el-table-column label="属性名" width="200">
+      <template #default="{ row }">
+        <div class="truncate" :title="row.label">
+          <el-tag v-if="row.contentFormat === 'markdown'" size="mini" type="success" class="mr-1">MD</el-tag>
+          {{ row.label }}
+        </div>
+      </template>
+    </el-table-column>
 
     <el-table-column label="类型" width="80">
       <template #default="{ row }">
@@ -58,7 +65,18 @@
           </el-link>
           <span v-else>{{ firstSample(row) }}</span>
         </template>
-        <template v-else>{{ firstSample(row) }}</template>
+        <template v-else>
+          <div v-if="row.contentFormat === 'markdown'" class="max-w-xs">
+            <pre class="text-xs bg-gray-100 p-2 rounded whitespace-pre-wrap overflow-hidden text-ellipsis"
+                 :title="firstSample(row)"
+                 style="max-height: 100px; overflow: hidden;">
+              {{ firstSample(row) }}
+            </pre>
+          </div>
+          <div v-else class="max-w-xs truncate" :title="firstSample(row)">
+            {{ firstSample(row) }}
+          </div>
+        </template>
       </template>
     </el-table-column>
 

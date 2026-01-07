@@ -81,6 +81,10 @@ export class UserService {
     const ok = await bcrypt.compare(dto.password, user.password);
     if (!ok) throw new UnauthorizedException('邮箱或密码错误');
 
+    // 更新最后登录时间
+    user.lastLoginAt = new Date();
+    await this.userRepo.save(user);
+
     const loginToken = this.generateToken();
 
     // Redis 单设备登录

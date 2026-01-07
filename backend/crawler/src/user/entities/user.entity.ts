@@ -30,6 +30,12 @@ export class User {
   })
   role: UserRole; // 🔥 角色字段（关键）
 
+  @Column({ default: 'active' })
+  status: string; // active | disabled
+
+  @Column({ type: 'datetime', nullable: true })
+  lastLoginAt: Date; // 最后登录时间
+
   @CreateDateColumn()
   createdAt: Date;
 

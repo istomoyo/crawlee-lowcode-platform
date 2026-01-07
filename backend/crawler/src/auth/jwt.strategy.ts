@@ -1,14 +1,13 @@
-import { Injectable, UnauthorizedException, Inject } from '@nestjs/common';
+import { Injectable, UnauthorizedException, Inject, Logger } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { Strategy, ExtractJwt } from 'passport-jwt';
 import Redis from 'ioredis';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
-  constructor(@Inject('REDIS_CLIENT') private redis: Redis) {
-    console.log('JwtStrategy loaded !!!'); // ← 新增
-    console.log('JWT_SECRET in strategy = ', process.env.JWT_SECRET);
+  private readonly logger = new Logger(JwtStrategy.name);
 
+  constructor(@Inject('REDIS_CLIENT') private redis: Redis) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
@@ -17,7 +16,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   }
 
   async validate(payload: any) {
-    console.log('>>> JwtStrategy.validate 被调用, payload = ', payload);
+    this.logger.debug(`Validating token for user: ${payload.id}`);
 
     const { id, loginToken } = payload;
     const latest = await this.redis.get(`user:token:${id}`);

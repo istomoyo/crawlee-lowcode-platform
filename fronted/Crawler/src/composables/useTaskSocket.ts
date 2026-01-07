@@ -123,17 +123,17 @@ export function useTaskSocket(
   }) => {
     console.log("处理任务状态更新:", payload);
 
-    // 通过任务名和URL来匹配任务（因为前端已经没有id字段）
+    // 使用taskId来匹配任务（唯一标识）
     const taskIndex = taskList.value.findIndex(
-      (task) => task.name === payload.taskName && task.url === payload.taskUrl
+      (task) => task.id === payload.taskId
     );
 
-    console.log("找到任务索引:", taskIndex, "任务数量:", taskList.value.length);
+    console.log("找到任务索引:", taskIndex, "任务ID:", payload.taskId, "任务数量:", taskList.value.length);
 
     if (taskIndex !== -1) {
       const task = taskList.value[taskIndex];
       if (task) {
-        console.log("更新任务状态:", task.name, "从", task.status, "到", payload.status);
+        console.log("更新任务状态:", task.name, "ID:", task.id, "从", task.status, "到", payload.status, "进度:", payload.progress);
         task.status = payload.status as any;
         task.progress = payload.progress;
 
@@ -149,8 +149,8 @@ export function useTaskSocket(
         taskList.value = [...taskList.value];
       }
     } else {
-      console.log("未找到匹配的任务:", payload.taskName, payload.taskUrl);
-      console.log("当前任务列表:", taskList.value.map(t => ({ name: t.name, url: t.url })));
+      console.log("未找到匹配的任务ID:", payload.taskId, "任务名:", payload.taskName);
+      console.log("当前任务列表ID:", taskList.value.map(t => ({ id: t.id, name: t.name, url: t.url })));
     }
   };
 
@@ -162,13 +162,16 @@ export function useTaskSocket(
 
   // 处理任务删除
   const handleTaskDeleted = (payload: { taskId: number; taskName?: string; taskUrl?: string }) => {
-    // 通过任务名和URL来匹配任务
+    // 使用taskId来匹配任务（唯一标识）
     const taskIndex = taskList.value.findIndex(
-      (task) => task.name === payload.taskName && task.url === payload.taskUrl
+      (task) => task.id === payload.taskId
     );
     if (taskIndex !== -1) {
       taskList.value.splice(taskIndex, 1);
       pagination.value.total--;
+      console.log("已删除任务ID:", payload.taskId);
+    } else {
+      console.log("未找到要删除的任务ID:", payload.taskId);
     }
   };
 
@@ -179,16 +182,21 @@ export function useTaskSocket(
     taskUrl?: string;
     execution: any;
   }) => {
-    // 通过任务名和URL来匹配任务
+    // 使用taskId来匹配任务（唯一标识）
     const taskIndex = taskList.value.findIndex(
-      (task) => task.name === payload.taskName && task.url === payload.taskUrl
+      (task) => task.id === payload.taskId
     );
     if (taskIndex !== -1) {
       const task = taskList.value[taskIndex];
       if (task && payload.execution) {
         task.latestExecution = payload.execution;
         task.lastExecutionTime = payload.execution.startTime;
+        // 触发UI更新
+        taskList.value = [...taskList.value];
+        console.log("已更新任务执行信息，任务ID:", payload.taskId);
       }
+    } else {
+      console.log("未找到要更新执行信息的任务ID:", payload.taskId);
     }
   };
 

@@ -17,12 +17,15 @@ import { XpathParseDto } from './dto/xpath-parse.dto';
 import { XpathMatchDto } from './dto/xpath-match.dto';
 import { ExecuteTaskDto } from './dto/execute-task.dto';
 import { ListPreviewDto } from './dto/list-preview.dto';
+import { PackageResultDto } from './dto/package-result.dto';
 
 class JsPathParseDto {
   url: string;
   jsPath: string;
   waitSelector?: string;
+  contentFormat?: 'text' | 'html' | 'markdown' = 'text';
 }
+
 
 @UseGuards(JwtAuthGuard)
 @Controller('task')
@@ -52,8 +55,8 @@ export class TaskController {
   // task.controller.ts
   @Post('xpath-parse')
   async parseByXpath(@Body() body: XpathParseDto) {
-    const { url, xpath } = body;
-    return this.taskService.parseByXpath(url, xpath);
+    const { url, xpath, contentFormat } = body;
+    return this.taskService.parseByXpath(url, xpath, contentFormat);
   }
 
   @Post('xpath-match')
@@ -68,9 +71,10 @@ export class TaskController {
   }
   @Post('jspath-parse')
   async parseByJsPath(@Body() body: JsPathParseDto) {
-    const { url, jsPath, waitSelector } = body;
-    return this.taskService.parseByJsPath(url, jsPath, waitSelector);
+    const { url, jsPath, waitSelector, contentFormat } = body;
+    return this.taskService.parseByJsPath(url, jsPath, waitSelector, contentFormat);
   }
+
 
   @SuccessMessage('任务执行成功')
   @Post('execute')
@@ -120,5 +124,29 @@ export class TaskController {
   async deleteTask(@Body() body: { name: string; url: string }, @Req() req: Request) {
     const user = req.user as { id: number };
     return this.taskService.deleteTaskByNameAndUrl(body.name, body.url, user.id);
+  }
+
+  @Get('statistics')
+  async getStatistics(@Req() req: Request) {
+    const user = req.user as { id: number };
+    return this.taskService.getStatistics(user.id);
+  }
+
+  @Post('package-result/:executionId')
+  async packageResult(
+    @Param('executionId') executionId: string,
+    @Body() body: PackageResultDto,
+    @Req() req: Request,
+  ) {
+    const user = req.user as { id: number };
+    const packagePath = await this.taskService.packageExecutionResult(
+      parseInt(executionId),
+      user.id,
+      body.packageConfig,
+    );
+    return {
+      message: '打包成功',
+      packagePath,
+    };
   }
 }

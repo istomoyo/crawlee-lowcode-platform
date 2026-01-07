@@ -21,6 +21,9 @@
       stripe
       style="width: 100%"
       v-loading="loading"
+      :row-key="(row: TaskItem) => row.id.toString()"
+      :expand-row-keys="expandedRows"
+      @expand-change="handleRowExpand"
     >
       <el-table-column prop="name" label="任务名称" min-width="160" />
 
@@ -89,22 +92,67 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="操作" width="220">
+      <el-table-column label="操作" width="240">
         <template #default="{ row }">
-          <el-button size="small" @click="viewExecution(row)"
-            >查看执行</el-button
-          >
-          <el-button size="small" type="warning" @click="editTask(row)"
-            >编辑</el-button
-          >
+          <el-dropdown @command="(command: string) => handleActionMenu(command, row)" trigger="click">
+            <el-button size="small" type="primary">
+              操作
+              <el-icon class="el-icon--right">
+                <arrow-down />
+              </el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="execute" :disabled="executingTaskName === row.name">
+                  <el-icon><VideoPlay /></el-icon>
+                  快速执行
+                </el-dropdown-item>
+                <el-dropdown-item command="edit">
+                  <el-icon><Edit /></el-icon>
+                  编辑任务
+                </el-dropdown-item>
+                <el-dropdown-item command="copy">
+                  <el-icon><CopyDocument /></el-icon>
+                  复制配置
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
           <el-button
             size="small"
             type="danger"
             :loading="deletingTaskName === row.name"
             @click="deleteTask(row)"
+            style="margin-left: 8px;"
           >
             删除
           </el-button>
+        </template>
+      </el-table-column>
+
+      <!-- 展开行显示结果 -->
+      <el-table-column type="expand" width="50">
+        <template #default="{ row }">
+          <div v-if="row.status === 'success' && row.latestExecution">
+            <TaskRow
+              :results="getResultData(row)"
+              :result-path="row.latestExecution.resultPath"
+              :execution-id="row.latestExecution.id"
+            />
+          </div>
+          <div v-else class="no-result">
+            <el-empty
+              :description="getTaskStatusDescription(row)"
+              :image-size="80"
+            >
+              <template #image>
+                <el-icon size="80" class="text-gray-400">
+                  <Clock v-if="row.status === 'running'" />
+                  <Warning v-else />
+                </el-icon>
+              </template>
+            </el-empty>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -122,118 +170,6 @@
         @size-change="handleSizeChange"
       />
     </div>
-
-    <!-- 执行详情弹窗 -->
-    <el-dialog
-      v-model="executionDialogVisible"
-      title="执行详情"
-      width="700px"
-      :close-on-click-modal="false"
-    >
-      <div v-if="currentExecution" class="space-y-4">
-        <!-- 任务基本信息 -->
-        <div class="grid grid-cols-1 gap-4">
-          <div>
-            <label class="text-sm font-medium text-gray-600">任务名称</label>
-            <p class="text-lg font-semibold">{{ currentExecution.taskName }}</p>
-          </div>
-          <div>
-            <label class="text-sm font-medium text-gray-600">任务URL</label>
-            <p class="text-sm text-blue-600 break-all">
-              {{ currentExecution.taskUrl }}
-            </p>
-          </div>
-        </div>
-
-        <!-- 执行状态和时间 -->
-        <div class="grid grid-cols-2 gap-4">
-          <div>
-            <label class="text-sm font-medium text-gray-600">执行状态</label>
-            <p>
-              <el-tag :type="statusType(currentExecution.status)">
-                {{ statusText(currentExecution.status) }}
-              </el-tag>
-            </p>
-          </div>
-          <div>
-            <label class="text-sm font-medium text-gray-600">开始时间</label>
-            <p>{{ formatDate(currentExecution.startTime) }}</p>
-          </div>
-          <div>
-            <label class="text-sm font-medium text-gray-600">结束时间</label>
-            <p>
-              {{
-                currentExecution.endTime
-                  ? formatDate(currentExecution.endTime)
-                  : "进行中"
-              }}
-            </p>
-          </div>
-          <div v-if="currentExecution.resultPath">
-            <label class="text-sm font-medium text-gray-600">执行结果</label>
-            <p>
-              <el-button
-                type="success"
-                size="small"
-                @click="downloadResult(currentExecution.resultPath!)"
-              >
-                下载结果文件
-              </el-button>
-            </p>
-          </div>
-        </div>
-
-        <!-- 执行结果（仅在成功时显示） -->
-        <div
-          v-if="
-            currentExecution.status === 'success' && currentExecution.results
-          "
-        >
-          <label class="text-sm font-medium text-gray-600">执行结果</label>
-          <div class="mt-2 p-3 bg-green-50 rounded border border-green-200">
-            <div class="flex items-center justify-between mb-2">
-              <span class="text-sm font-medium text-green-800">
-                共爬取 {{ currentExecution.resultCount }} 条数据
-              </span>
-              <el-button
-                v-if="currentExecution.resultPath"
-                type="success"
-                size="mini"
-                @click="downloadResult(currentExecution.resultPath)"
-              >
-                下载完整结果
-              </el-button>
-            </div>
-            <el-table
-              :data="currentExecution.results"
-              size="mini"
-              border
-              style="width: 100%"
-              max-height="300"
-            >
-              <el-table-column
-                v-for="key in getResultKeys(currentExecution.results)"
-                :key="key"
-                :prop="key"
-                :label="key"
-                min-width="100"
-                show-overflow-tooltip
-              />
-            </el-table>
-          </div>
-        </div>
-
-        <!-- 执行日志 -->
-        <div>
-          <label class="text-sm font-medium text-gray-600">执行日志</label>
-          <pre
-            class="mt-2 p-3 bg-gray-100 rounded text-sm whitespace-pre-wrap max-h-60 overflow-y-auto"
-            >{{ currentExecution.log }}</pre
-          >
-        </div>
-      </div>
-    </el-dialog>
-
   </div>
 </template>
 
@@ -241,8 +177,10 @@
 import { ref, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { getTaskListApi, deleteTaskApi } from "@/api/task";
+import { Clock, Warning, ArrowDown, VideoPlay, Edit, CopyDocument } from "@element-plus/icons-vue";
+import { getTaskListApi, deleteTaskApi, executeTaskApi } from "@/api/task";
 import { useTaskSocket } from "@/composables/useTaskSocket";
+import TaskRow from "@/components/TaskRow.vue";
 
 const router = useRouter();
 
@@ -259,23 +197,21 @@ const pagination = ref({
   totalPages: 0,
 });
 
-// 执行详情弹窗
-const executionDialogVisible = ref(false);
-const currentExecution = ref<{
-  status: string;
-  log: string;
-  startTime: string;
-  endTime: string | null;
-  resultPath?: string;
-  taskName?: string;
-  taskUrl?: string;
-  // 结果数据
-  resultCount?: number;
-  results?: any[];
-} | null>(null);
+// 展开行控制
+const expandedRows = ref<string[]>([]);
+
+// 任务结果缓存，避免重复加载
+const taskResults = ref<Map<string, any>>(new Map());
+
+// 当前正在加载结果的行
+const loadingRows = ref<Set<string>>(new Set());
+
+// 获取行的唯一键
+const getRowKey = (row: TaskItem) => row.id.toString();
 
 // 操作状态
 const deletingTaskName = ref<string | null>(null);
+const executingTaskName = ref<string | null>(null);
 
 // Socket.IO 功能
 // Socket.IO 功能（将在fetchTaskList定义后初始化）
@@ -384,34 +320,6 @@ const statusText = (status: string) => {
   }
 };
 
-
-// 下载执行结果文件
-const downloadResult = (resultPath: string) => {
-  try {
-    // 创建下载链接
-    const link = document.createElement("a");
-    link.href = `${import.meta.env.VITE_API_BASE_URL || "/api"}/${resultPath}`;
-    link.download = resultPath.split("/").pop() || "result.json";
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    ElMessage.success("开始下载结果文件");
-  } catch (error) {
-    ElMessage.error("下载失败");
-    console.error("Download error:", error);
-  }
-};
-
-// 获取结果数据的键名
-const getResultKeys = (results: any[]) => {
-  if (!results || results.length === 0) return [];
-  const keys = new Set<string>();
-  results.forEach((item) => {
-    Object.keys(item).forEach((key) => keys.add(key));
-  });
-  return Array.from(keys);
-};
-
 // 格式化日期
 const formatDate = (dateStr: string) => {
   try {
@@ -431,45 +339,121 @@ const formatDate = (dateStr: string) => {
   }
 };
 
+// 处理行展开
+const handleRowExpand = async (row: TaskItem, expanded: TaskItem[]) => {
+  const rowKey = getRowKey(row);
+  const isExpanding = expanded.some((r) => getRowKey(r) === rowKey);
+
+  if (isExpanding && row.status === "success" && row.latestExecution) {
+    // 检查是否已有缓存的结果数据
+    const cacheKey = getRowKey(row);
+    if (!taskResults.value.has(cacheKey)) {
+      loadingRows.value.add(rowKey);
+      try {
+        // 从结果文件路径获取数据
+        if (row.latestExecution.resultPath) {
+          // 检查是否为ZIP文件，ZIP文件不需要加载JSON数据
+          const isZipFile = row.latestExecution.resultPath.toLowerCase().endsWith('.zip');
+          if (isZipFile) {
+            // ZIP文件不需要加载数据，设置为空数组，但保留路径用于下载
+            taskResults.value.set(cacheKey, []);
+          } else {
+            // JSON文件，正常加载
+            const response = await fetch(
+              `${import.meta.env.VITE_API_BASE_URL || "/api"}/${
+                row.latestExecution.resultPath
+              }`
+            );
+            if (response.ok) {
+              const results = await response.json();
+              // 确保结果是数组格式，且只包含用户自定义字段
+              taskResults.value.set(
+                cacheKey,
+                Array.isArray(results) ? results : []
+              );
+            } else {
+              throw new Error(`获取结果失败: ${response.status}`);
+            }
+          }
+        } else {
+          taskResults.value.set(cacheKey, []);
+        }
+      } catch (error) {
+        console.error("获取结果数据失败:", error);
+        taskResults.value.set(cacheKey, []);
+        ElMessage.warning("获取结果数据失败");
+      } finally {
+        loadingRows.value.delete(rowKey);
+      }
+    }
+  }
+};
+
+// 获取结果数据
+const getResultData = (row: TaskItem) => {
+  const cacheKey = getRowKey(row);
+  return taskResults.value.get(cacheKey) || [];
+};
+
+// 获取任务状态描述
+const getTaskStatusDescription = (row: TaskItem) => {
+  switch (row.status) {
+    case "pending":
+      return "任务等待执行中";
+    case "running":
+      return "任务正在执行中，请稍候...";
+    case "failed":
+      return "任务执行失败，请查看执行日志";
+    default:
+      return "任务状态未知";
+  }
+};
+
 // 操作处理
 const goToCreateTask = () => {
   router.push("/crawleer/task-add/basic");
 };
 
-const viewExecution = async (row: TaskItem) => {
-  if (row.latestExecution) {
-    currentExecution.value = {
-      ...row.latestExecution,
-      taskName: row.name,
-      taskUrl: row.url,
-    };
-
-    // 如果任务成功完成，尝试获取结果数据
-    if (row.status === "success") {
-      try {
-        // 由于我们没有executionId，我们暂时显示模拟数据
-        // 在实际应用中，应该通过API获取executionId对应的结果
-        currentExecution.value.resultCount = 1;
-        currentExecution.value.results = [
-          {
-            url: row.url,
-            title: "爬取成功",
-            crawledAt: new Date().toISOString(),
-            statusCode: 200,
-            message: "数据已保存到服务器文件系统中",
-          },
-        ];
-      } catch (error) {
-        console.error("获取结果数据失败:", error);
-      }
-    }
-
-    executionDialogVisible.value = true;
-  } else {
-    ElMessage.info("该任务暂无执行记录");
+// 处理操作菜单命令
+const handleActionMenu = (command: any, row: TaskItem) => {
+  switch (command) {
+    case 'execute':
+      quickExecuteTask(row);
+      break;
+    case 'edit':
+      editTask(row);
+      break;
+    case 'copy':
+      copyTaskConfig(row);
+      break;
   }
 };
 
+// 复制任务配置
+const copyTaskConfig = async (row: TaskItem) => {
+  try {
+    // 构建配置对象
+    const config = {
+      name: row.name,
+      url: row.url,
+      config: row.config ? JSON.parse(row.config) : {},
+      script: row.script || "",
+    };
+
+    // 格式化为JSON字符串
+    const configJson = JSON.stringify(config, null, 2);
+
+    // 复制到剪贴板
+    await navigator.clipboard.writeText(configJson);
+
+    ElMessage.success("任务配置已复制到剪贴板");
+  } catch (error) {
+    console.error("复制配置失败:", error);
+    ElMessage.error("复制配置失败");
+  }
+};
+
+// 编辑任务
 const editTask = (_row: TaskItem) => {
   ElMessage.info("编辑功能开发中...");
   // router.push(`/task/edit/${row.id}`);
@@ -498,6 +482,53 @@ const deleteTask = async (row: TaskItem) => {
     }
   } finally {
     deletingTaskName.value = null;
+  }
+};
+
+const quickExecuteTask = async (row: TaskItem) => {
+  try {
+    executingTaskName.value = row.name;
+    
+    // 生成新任务名称（基于原任务名称 + 时间戳）
+    const timestamp = new Date().toLocaleString('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }).replace(/\//g, '-').replace(/:/g, '-');
+    const newTaskName = `${row.name}_${timestamp}`;
+    
+    // 解析原任务的配置
+    let taskConfig = null;
+    if (row.config) {
+      try {
+        taskConfig = JSON.parse(row.config);
+      } catch (e) {
+        console.error('解析任务配置失败:', e);
+        ElMessage.warning('任务配置解析失败，将使用默认配置');
+      }
+    }
+    
+    // 创建新任务并执行（不传 taskId，这样会创建新任务）
+    const response = await executeTaskApi({
+      taskName: newTaskName,
+      url: row.url,
+      config: taskConfig,
+    });
+
+    if (response.status === 'queued' || response.status === 'running') {
+      ElMessage.success(`已创建新任务 "${newTaskName}" 并开始执行`);
+      // 刷新任务列表以显示新任务
+      fetchTaskList();
+    } else {
+      ElMessage.warning(`任务执行状态: ${response.message}`);
+    }
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "未知错误";
+    ElMessage.error(`执行失败: ${errorMessage}`);
+  } finally {
+    executingTaskName.value = null;
   }
 };
 
@@ -541,5 +572,14 @@ onUnmounted(() => {
 .screenshot-thumb:hover {
   transform: scale(1.05);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+/* 无结果样式 */
+.no-result {
+  padding: 48px 24px;
+  text-align: center;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
 }
 </style>
