@@ -118,11 +118,13 @@ export class CrawleeEngineService {
       try {
         await this.executeCrawlerTask(crawlerTask);
       } catch (error) {
-        this.logger.error(`任务 ${crawlerTask.taskId} 执行失败:`, error);
+        const errorMessage = error instanceof Error ? error.message : String(error || '未知错误');
+        const errorObj = error instanceof Error ? error : new Error(String(error || '未知错误'));
+        this.logger.error(`任务 ${crawlerTask.taskId} 执行失败:`, errorObj);
         await this.updateExecutionStatus(
           crawlerTask.executionId,
           'failed',
-          `执行失败: ${error.message}`,
+          `执行失败: ${errorMessage}`,
         );
       }
     }
@@ -183,6 +185,8 @@ export class CrawleeEngineService {
         this.taskGateway,
       );
       const logger = this.logger;
+      const extractDataFromElement = this.extractDataFromElement.bind(this);
+      const extractDataFromSelector = this.extractDataFromSelector.bind(this);
 
       // 创建专用的crawler实例
       const taskCrawler = new PlaywrightCrawler({
@@ -299,8 +303,9 @@ export class CrawleeEngineService {
                   );
                 });
             } catch (error) {
+              const errorMessage = error instanceof Error ? error.message : String(error || '未知错误');
               logger.log(
-                `页面 ${request.url} 加载超时，但继续处理: ${error.message}`,
+                `页面 ${request.url} 加载超时，但继续处理: ${errorMessage}`,
               );
             }
 
@@ -369,7 +374,7 @@ export class CrawleeEngineService {
                 // 只提取所有非子节点的选择器（包括link类型的节点）
                 const linkSelectors = config.selectors.filter(s => !s.parentLink);
                 for (const selectorConfig of linkSelectors) {
-                  await this.extractDataFromElement(
+                  await extractDataFromElement(
                     baseElement,
                     selectorConfig,
                     itemData,
@@ -422,7 +427,7 @@ export class CrawleeEngineService {
                     parentLink: undefined // 清除parentLink，因为已经在子页面了
                   };
                   
-                  await this.extractDataFromSelector(
+                  await extractDataFromSelector(
                     page,
                     tempSelectorConfig,
                     itemData,
@@ -483,7 +488,7 @@ export class CrawleeEngineService {
               // 向后兼容：如果没有基础选择器，使用原有逻辑
               const extractedData: any = {};
               for (const selectorConfig of config.selectors) {
-                await this.extractDataFromSelector(
+                await extractDataFromSelector(
                   page,
                   selectorConfig,
                   extractedData,
@@ -628,8 +633,10 @@ export class CrawleeEngineService {
             await updateDetailedProgress(95, `截图生成完成`);
 
           } catch (error) {
-            this.logger.error(`处理页面失败 ${request.url}`, error);
-            throw error;
+            const errorMessage = error instanceof Error ? error.message : String(error || '未知错误');
+            const errorObj = error instanceof Error ? error : new Error(String(error || '未知错误'));
+            logger.error(`处理页面失败 ${request.url}: ${errorMessage}`, errorObj);
+            throw errorObj;
           }
         },
       });
@@ -729,11 +736,13 @@ export class CrawleeEngineService {
       await requestQueue.drop();
       // 注意：Dataset和KeyValueStore通常保留用于后续分析
     } catch (error) {
-      this.logger.error(`任务 ${taskId} 执行失败:`, error);
+      const errorMessage = error instanceof Error ? error.message : String(error || '未知错误');
+      const errorObj = error instanceof Error ? error : new Error(String(error || '未知错误'));
+      this.logger.error(`任务 ${taskId} 执行失败:`, errorObj);
       await this.updateExecutionStatus(
         executionId,
         'failed',
-        `执行失败: ${error.message}`,
+        `执行失败: ${errorMessage}`,
       );
 
       // 更新Task的endTime和状态
