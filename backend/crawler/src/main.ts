@@ -1,6 +1,12 @@
 import * as dotenv from 'dotenv';
 dotenv.config();
 
+// Workaround for Crawlee on some Windows + Node 24 setups:
+// disable systemInfoV2 process parsing path that can crash on localized headers.
+if (!process.env.CRAWLEE_SYSTEM_INFO_V2) {
+  process.env.CRAWLEE_SYSTEM_INFO_V2 = '0';
+}
+
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe, Logger } from '@nestjs/common';

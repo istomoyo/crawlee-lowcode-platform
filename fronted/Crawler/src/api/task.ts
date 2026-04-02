@@ -1,4 +1,5 @@
 import request from "./request";
+import type { TaskItem } from "@/types/task";
 
 // =======================
 // 页面截图
@@ -108,11 +109,60 @@ export function xpathParseAllApi(data: {
 // =======================
 // Crawlee 爬虫任务执行
 // =======================
+
+// 页面交互配置：用于支持「先输入关键词」与「页面内筛选控件」两种场景
+export interface PageFilterCondition {
+  id: number;
+  label: string;
+  actionType: "click" | "select";
+  selectorType: "xpath" | "jsPath";
+  selector: string;
+  value?: string;
+}
+
+export interface PageInteractionConfig {
+  searchEnabled: boolean;
+  searchInputType: "xpath" | "jsPath";
+  searchInputSelector: string;
+  searchKeywordMode: "fixed" | "dynamic";
+  searchKeywordValue: string;
+  searchSubmitType: "enter" | "click";
+  searchSubmitSelector: string;
+  filters: PageFilterCondition[];
+}
+
+export interface PreActionConfig {
+  type: "click" | "wait_for_selector" | "wait_for_timeout";
+  selectorType?: "xpath" | "css";
+  selector?: string;
+  timeout?: number;
+}
+
+// 结果过滤：在爬取完成后按字段值丢弃不符合条件的记录
+export type ResultFilterOperator =
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte"
+  | "eq"
+  | "contains"
+  | "not_contains";
+
+export interface ResultFilterRule {
+  field: string;
+  operator: ResultFilterOperator;
+  value: string;
+}
+
 export interface CrawleeTaskConfig {
-  crawlerType: 'playwright' | 'cheerio' | 'puppeteer';
+  crawlerType: "playwright" | "cheerio" | "puppeteer";
   urls: string[];
   maxRequestsPerCrawl?: number;
   maxConcurrency?: number;
+  // 基础选择器：用于定位列表项（支持 XPath 或 CSS / JSPath）
+  baseSelector?: string;
+  // 最大提取记录数（所有分页合计）
+  maxItems?: number;
   headless?: boolean;
   viewport?: {
     width: number;
@@ -121,25 +171,59 @@ export interface CrawleeTaskConfig {
   waitForSelector?: string;
   waitForTimeout?: number;
   navigationTimeout?: number;
+  requestInterval?: number;
+  maxRetries?: number;
   scrollEnabled?: boolean;
   scrollDistance?: number;
   scrollDelay?: number;
   maxScrollDistance?: number;
+  // 基于“下一页”按钮的分页配置（可选）
+  // 当前实现：每一页会先按 scrollEnabled 滚动，再根据 nextPageSelector 翻页，最多 maxPages 页
+  nextPageSelector?: string;
+  maxPages?: number;
   selectors?: SelectorConfig[];
+  /** 嵌套提取：详情页内列表（如评论）支持独立分页/滚动，最多 3 层 */
+  nestedContexts?: NestedExtractContext[];
   userAgent?: string;
   proxyUrl?: string;
   datasetId?: string;
   keyValueStoreId?: string;
+  // 页面交互配置（可选）
+  interaction?: PageInteractionConfig;
+  // 提取前动作（可选）
+  preActions?: PreActionConfig[];
+  // 结果过滤规则（可选）
+  resultFilters?: ResultFilterRule[];
+  // 自定义 JS 处理代码（可选），对每条记录执行
+  // 代码将作为函数体执行，入参为 item，必须 return：
+  // - 返回对象：作为新的 item
+  // - 返回 null/undefined/false：丢弃该条数据
+  customItemProcessorCode?: string;
+  // 结果筛选：自定义布尔函数（可选），入参 item，true 保留 false 丢弃
+  customFilterCode?: string;
+}
+
+export interface NestedExtractContext {
+  parentLink: string;
+  baseSelector: string;
+  listOutputKey?: string;
+  scroll?: { maxScroll: number; waitTime: number; maxItems: number };
+  next?: { selector: string; maxPages: number };
+  selectors: SelectorConfig[];
+  maxDepth?: number;
+  preActions?: PreActionConfig[];
 }
 
 export interface SelectorConfig {
   name: string;
   selector: string;
-  type: 'text' | 'link' | 'image';
+  type: "text" | "link" | "image";
   multiple?: boolean;
   required?: boolean;
-  // 内容格式（仅对 text 类型有效）：text / html / markdown / smart
-  contentFormat?: 'text' | 'html' | 'markdown' | 'smart';
+  contentFormat?: "text" | "html" | "markdown" | "smart";
+  detailBaseSelector?: string;
+  // 对该字段取值后的 JS 处理，入参 value，需 return 新值
+  customTransformCode?: string;
   // Optional: used for navigating to child pages via an associated link
   // (e.g., when a value on a list item points to a detail page)
   parentLink?: string;

@@ -23,7 +23,8 @@
 <script lang="ts" setup>
 import { ref, onMounted } from "vue";
 import { useRouter } from "vue-router";
-import { getUserListApi, deleteUserApi, UserItem } from "@/api/user";
+import { getUserListApi, deleteUserApi } from "@/api/user";
+import type { UserItem } from "@/api/user";
 import { ElMessage, ElMessageBox } from "element-plus";
 
 const router = useRouter();

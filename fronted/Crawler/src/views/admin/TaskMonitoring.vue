@@ -230,7 +230,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Document, Loading, SuccessFilled, Warning } from '@element-plus/icons-vue'
-import { getTasksApi, stopTaskApi, type TaskItem, type TaskListResponse, type ApiResponse } from '@/api/admin'
+import { getTasksApi, stopTaskApi, type TaskListResponse } from '@/api/admin'
 
 // 任务接口
 interface Task {
@@ -421,7 +421,7 @@ const viewTaskDetails = (task: Task) => {
 }
 
 // 停止任务
-const stopTask = async (task: TaskItem) => {
+const stopTask = async (task: Task) => {
   try {
     await ElMessageBox.confirm(`确定要停止任务 "${task.name}" 吗？`, '提示', {
       type: 'warning',

@@ -56,7 +56,7 @@ export class TaskController {
   @Post('xpath-parse')
   async parseByXpath(@Body() body: XpathParseDto) {
     const { url, xpath, contentFormat } = body;
-    return this.taskService.parseByXpath(url, xpath, contentFormat);
+    return this.taskService.parseByXpath(url, xpath, undefined, contentFormat);
   }
 
   @Post('xpath-match')

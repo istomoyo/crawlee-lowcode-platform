@@ -27,6 +27,8 @@ export interface CrawleeTaskConfig {
   waitForSelector?: string; // 等待选择器出现
   waitForTimeout?: number; // 等待超时时间
   navigationTimeout?: number; // 导航超时时间
+  requestInterval?: number; // 空值重试/请求间隔参考时间（毫秒）
+  maxRetries?: number; // 请求与空值提取重试次数
 
   // 数据提取配置
   baseSelector?: string; // 基础选择器，用于定位数据项列表
@@ -38,8 +40,16 @@ export interface CrawleeTaskConfig {
   scrollDelay?: number;
   maxScrollDistance?: number;
 
+  // 分页配置（用于点击“下一页”按钮翻页）
+  // 当前实现：每一页会先根据滚动配置完成懒加载，再使用 nextPageSelector 找到下一页链接或按钮，最多 maxPages 页
+  nextPageSelector?: string;
+  maxPages?: number;
+
   // 数据提取配置
   selectors?: SelectorConfig[];
+
+  /** 嵌套提取上下文：详情页内的列表（如评论）支持独立分页/滚动，最多 3 层 */
+  nestedContexts?: NestedExtractContext[];
 
   // 请求配置
   userAgent?: string;
@@ -48,6 +58,8 @@ export interface CrawleeTaskConfig {
   // 存储配置
   datasetId?: string; // Crawlee Dataset ID
   keyValueStoreId?: string; // Key-Value Store ID
+  // 字段提取前动作（例如：先点击按钮再等待列表出现）
+  preActions?: PreActionConfig[];
 
   // 输出格式配置
   outputFormat?: 'json' | 'packaged'; // 输出格式：json 或 packaged（打包压缩）
@@ -71,19 +83,42 @@ export interface CrawleeTaskConfig {
       timeout?: number; // 下载超时时间（毫秒），默认30000
     };
   };
+
+  // 自定义结果处理 JS 代码（可选）
+  customItemProcessorCode?: string;
+  // 结果筛选：自定义布尔函数（可选），入参 item，true 保留 false 丢弃
+  customFilterCode?: string;
+}
+
+export interface PreActionConfig {
+  type: 'click' | 'wait_for_selector' | 'wait_for_timeout';
+  selectorType?: 'xpath' | 'css';
+  selector?: string;
+  timeout?: number;
 }
 
 export interface SelectorConfig {
-  name: string; // 选择器名称
-  selector: string; // CSS/XPath选择器
-  type: 'text' | 'link' | 'image'; // 提取类型：文本、链接、图像
-  // 内容格式（仅对 text 类型有效）
-  // text: 纯文本（默认）
-  // html: 原始 HTML
-  // markdown: 使用 Turndown 将 HTML 转为 Markdown
-  // smart: 预留智能提取模式（暂时等同于 markdown 处理）
+  name: string;
+  selector: string;
+  type: 'text' | 'link' | 'image';
   contentFormat?: 'text' | 'html' | 'markdown' | 'smart';
-  parentLink?: string; // 父链接URL，用于链接子节点，表示该选择器应在此链接页面上执行
+  parentLink?: string;
+  // 可选：当 parentLink 字段来自子页面列表时，指定该子页面列表项容器
+  detailBaseSelector?: string;
+  // 对该字段取值后的 JS 处理，入参 value，需 return 新值
+  customTransformCode?: string;
+}
+
+/** 嵌套提取上下文：详情页内列表（如评论）支持独立分页/滚动 */
+export interface NestedExtractContext {
+  parentLink: string;
+  baseSelector: string;
+  listOutputKey?: string;
+  scroll?: { maxScroll: number; waitTime: number; maxItems: number };
+  next?: { selector: string; maxPages: number };
+  selectors: SelectorConfig[];
+  maxDepth?: number;
+  preActions?: PreActionConfig[];
 }
 
 export class ExecuteTaskDto {

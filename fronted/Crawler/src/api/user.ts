@@ -46,9 +46,29 @@ export interface UserInfo {
   role: string;
   avatar?: string;
 }
+
+// 兼容旧页面 UserList.vue 使用
+export interface UserItem {
+  id: number;
+  username: string;
+  email: string;
+  role: string;
+}
 //获取用户详细信息
 export function getUserInfoApi(): Promise<UserInfo> {
   return request.get("/api/user/profile");
+}
+
+export async function getUserListApi(): Promise<UserItem[]> {
+  const res = await request.get("/api/admin/users", {
+    params: { page: 1, limit: 1000 },
+  });
+  const items = (res as any)?.items || [];
+  return items;
+}
+
+export function deleteUserApi(id: number) {
+  return request.delete(`/api/admin/users/${id}`);
 }
 
 // 更新基础信息（目前只支持用户名）

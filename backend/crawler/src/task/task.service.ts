@@ -1,4 +1,4 @@
-import {
+﻿import {
   Injectable,
   InternalServerErrorException,
   BadRequestException,
@@ -403,6 +403,15 @@ export class TaskService {
   }
 
   async parseByXpath(url: string, xpath: string, waitSelector?: string, contentFormat: 'text' | 'html' | 'markdown' | 'smart' = 'text') {
+    if (
+      waitSelector &&
+      ['text', 'html', 'markdown', 'smart'].includes(waitSelector) &&
+      contentFormat === 'text'
+    ) {
+      contentFormat = waitSelector as 'text' | 'html' | 'markdown' | 'smart';
+      waitSelector = undefined;
+    }
+
     this.logger.debug(`parseByXpath called with contentFormat: ${contentFormat}`);
 
     let browser: playwright.Browser | null = null;
@@ -743,8 +752,11 @@ export class TaskService {
             });
           }
 
-          // ⭐ 如果目标元素不是 img，则 texts 必须长度不为0
-          if (tagName !== 'img' && texts.length === 0) {
+          const hasCollectedContent =
+            texts.length > 0 || images.length > 0 || links.length > 0;
+
+          // 命中节点自身或其子节点里只要有任意可提取内容，就视为有效匹配
+          if (!hasCollectedContent) {
             el = iterator.iterateNext() as HTMLElement | null;
             continue;
           }

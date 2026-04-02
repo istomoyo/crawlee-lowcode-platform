@@ -80,7 +80,7 @@
       </template>
     </el-table-column>
 
-    <el-table-column label="操作" width="250">
+    <el-table-column label="操作" width="320">
       <template #default="{ row }">
         <el-button size="small" type="primary" text @click="emit('edit', row)">
           编辑
@@ -97,21 +97,70 @@
         >
           添加子节点
         </el-button>
+        <el-dropdown
+          v-if="row.type === 'link'"
+          trigger="click"
+          @command="(cmd: 'field'|'image'|'link'|'next'|'scroll') => emit('add-custom-child', row, cmd)"
+        >
+          <el-button size="small" type="info" text>
+            添加属性 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="field">字段</el-dropdown-item>
+              <el-dropdown-item command="image">图片</el-dropdown-item>
+              <el-dropdown-item command="link">链接</el-dropdown-item>
+              <el-dropdown-item command="next">分页</el-dropdown-item>
+              <el-dropdown-item command="scroll">滚动</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </template>
     </el-table-column>
 
     <el-table-column type="expand" width="50">
       <template #default="{ row }">
-        <div v-if="row.children?.length" class="pl-4">
+        <div v-if="row.children?.length || row.type === 'link'" class="pl-4">
           <FieldNodeList
+            v-if="row.children?.length"
             :nodes="row.children"
+            :parent-node="row"
             :batch-mode="batchMode"
             :selected-nodes="selectedNodes"
             @edit="(n) => emit('edit', n)"
             @remove="(id) => emit('remove', id)"
             @add-child="(n) => emit('add-child', n)"
+            @add-custom-child="(parent, type) => emit('add-custom-child', parent, type)"
             @selection-change="(nodes) => emit('selection-change', nodes)"
           />
+          <div v-if="row.type === 'link' && (!row.children || row.children.length === 0)" class="py-2">
+            <el-dropdown trigger="click" @command="(cmd: 'field'|'image'|'link'|'next'|'scroll') => emit('add-custom-child', row, cmd)">
+              <el-button size="small" type="primary">添加子属性</el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="field">字段</el-dropdown-item>
+                  <el-dropdown-item command="image">图片</el-dropdown-item>
+                  <el-dropdown-item command="link">链接</el-dropdown-item>
+                  <el-dropdown-item command="next">分页</el-dropdown-item>
+                  <el-dropdown-item command="scroll">滚动</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
+          <div v-else-if="row.type === 'link' && row.children?.length" class="py-1 flex items-center gap-2">
+            <el-dropdown trigger="click" @command="(cmd: 'field'|'image'|'link'|'next'|'scroll') => emit('add-custom-child', row, cmd)">
+              <el-button size="small" type="primary" text>+ 添加子属性</el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="field">字段</el-dropdown-item>
+                  <el-dropdown-item command="image">图片</el-dropdown-item>
+                  <el-dropdown-item command="link">链接</el-dropdown-item>
+                  <el-dropdown-item command="next">分页</el-dropdown-item>
+                  <el-dropdown-item command="scroll">滚动</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
         </div>
       </template>
     </el-table-column>
@@ -119,7 +168,7 @@
 </template>
 
 <script setup lang="ts">
-import { defineProps, defineEmits } from "vue";
+import { ArrowDown } from "@element-plus/icons-vue";
 
 interface TreeNode {
   id: number;
@@ -138,6 +187,7 @@ interface TreeNode {
 
 defineProps<{
   nodes: TreeNode[];
+  parentNode?: TreeNode | null;
   batchMode?: boolean;
   selectedNodes?: TreeNode[];
 }>();
@@ -146,6 +196,7 @@ const emit = defineEmits<{
   (e: "edit", node: TreeNode): void;
   (e: "remove", id: number): void;
   (e: "add-child", node: TreeNode): void;
+  (e: "add-custom-child", parentNode: TreeNode, type: "field" | "image" | "link" | "next" | "scroll"): void;
   (e: "selection-change", nodes: TreeNode[]): void;
 }>();
 

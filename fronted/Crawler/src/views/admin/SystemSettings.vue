@@ -260,7 +260,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Check, SuccessFilled, Clock, InfoFilled } from '@element-plus/icons-vue'
-import { getSystemSettingsApi, updateSystemSettingsApi, getSystemInfoApi, type SystemSettings, type SystemInfo, type ApiResponse } from '@/api/admin'
+import { getSystemSettingsApi, updateSystemSettingsApi } from '@/api/admin'
 
 // 系统设置接口
 interface SystemSettings {
@@ -378,7 +378,7 @@ const loadSettings = async () => {
 // 保存设置
 const saveSettings = async () => {
   try {
-    const response: ApiResponse<SystemSettings> = await updateSystemSettingsApi(settings)
+    const response = await updateSystemSettingsApi(settings)
     Object.assign(settings, response.data!)
     ElMessage.success('设置保存成功')
   } catch (error) {

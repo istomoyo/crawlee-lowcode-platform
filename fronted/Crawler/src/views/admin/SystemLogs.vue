@@ -204,7 +204,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh, Download, Delete, Document, Warning, InfoFilled } from '@element-plus/icons-vue'
-import { getLogsApi, clearLogsApi, type LogEntry, type LogListResponse, type ApiResponse } from '@/api/admin'
+import { getLogsApi, clearLogsApi, type LogListResponse } from '@/api/admin'
 
 // 日志接口
 interface LogEntry {

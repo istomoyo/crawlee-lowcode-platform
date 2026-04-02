@@ -70,7 +70,7 @@
                 placeholder="images/{index}_{fieldName}.{ext}"
                 class="font-mono flex-1"
               />
-              <el-dropdown @command="(field) => insertField('images', field)" trigger="click">
+              <el-dropdown @command="(field: string) => insertField('images', field)" trigger="click">
                 <el-button type="primary" plain>
                   <el-icon class="mr-1"><Plus /></el-icon>
                   插入字段
@@ -102,7 +102,7 @@
                 placeholder="files/{index}_{fieldName}.{ext}"
                 class="font-mono flex-1"
               />
-              <el-dropdown @command="(field) => insertField('files', field)" trigger="click">
+              <el-dropdown @command="(field: string) => insertField('files', field)" trigger="click">
                 <el-button type="primary" plain>
                   <el-icon class="mr-1"><Plus /></el-icon>
                   插入字段
@@ -133,7 +133,7 @@
                 placeholder="texts/{index}_{fieldName}.txt"
                 class="font-mono flex-1"
               />
-              <el-dropdown @command="(field) => insertField('texts', field)" trigger="click">
+              <el-dropdown @command="(field: string) => insertField('texts', field)" trigger="click">
                 <el-button type="primary" plain>
                   <el-icon class="mr-1"><Plus /></el-icon>
                   插入字段

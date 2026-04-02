@@ -399,7 +399,7 @@ const props = defineProps<Props>();
 
 interface Emits {
   (e: 'update:visible', value: boolean): void;
-  (e: 'confirm', children: any[]): void;
+  (e: 'confirm', payload: { children: any[]; detailBaseSelector?: string }): void;
 }
 
 const emit = defineEmits<Emits>();
@@ -720,7 +720,7 @@ async function confirmAddChildNode() {
         contentFormat: "markdown",
       });
 
-      emit('confirm', children);
+      emit('confirm', { children });
       ElMessage.success(`成功添加文章内容节点，将直接使用XPath转换为Markdown格式`);
       loading.value = false;
       return;
@@ -867,7 +867,13 @@ async function confirmAddChildNode() {
       });
     });
 
-    emit('confirm', children);
+    emit('confirm', {
+      children,
+      detailBaseSelector:
+        props.parentNode?.type === 'link' && !useJsPath && selectedXpathType.value === 'list'
+          ? validPath
+          : undefined,
+    });
 
     if (shouldUseMarkdown) {
       ElMessage.success(`成功添加文章内容节点，已直接转换为Markdown格式`);

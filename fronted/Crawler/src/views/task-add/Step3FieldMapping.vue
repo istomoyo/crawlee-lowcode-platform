@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <el-card class="h-full flex flex-col p-4">
 
     <div class="flex justify-between items-center mb-3">
@@ -46,6 +46,53 @@
       @selection-change="handleSelectionChange"
     />
 
+    <div class="mt-4 p-3 border border-blue-200 bg-blue-50 rounded-lg">
+      <div class="flex items-center justify-between">
+        <div class="text-sm font-medium text-blue-900">根层抓取前动作（可视化）</div>
+        <el-button size="small" type="primary" @click="addGlobalPreAction">添加动作</el-button>
+      </div>
+      <div class="text-xs text-blue-800 mt-1 mb-2">
+        根层动作用于列表抓取前。嵌套层动作请在 `next/scroll` 节点编辑弹窗中配置。
+      </div>
+      <div v-if="store.crawlerConfig.preActions.length === 0" class="text-xs text-gray-500">未配置</div>
+      <div
+        v-for="(action, index) in store.crawlerConfig.preActions"
+        :key="`root-action-${index}`"
+        class="grid grid-cols-12 gap-2 mb-2"
+      >
+        <el-select v-model="action.type" class="col-span-3" @change="onActionTypeChange(action)">
+          <el-option label="点击" value="click" />
+          <el-option label="等待元素" value="wait_for_selector" />
+          <el-option label="等待时间" value="wait_for_timeout" />
+        </el-select>
+        <el-select
+          v-if="action.type !== 'wait_for_timeout'"
+          v-model="action.selectorType"
+          class="col-span-2"
+        >
+          <el-option label="XPath" value="xpath" />
+          <el-option label="CSS" value="css" />
+        </el-select>
+        <el-input
+          v-if="action.type !== 'wait_for_timeout'"
+          v-model="action.selector"
+          class="col-span-5"
+          placeholder="//button[contains(.,'展开')] 或 .btn-more"
+        />
+        <el-input-number
+          v-model="action.timeout"
+          class="col-span-2"
+          :min="100"
+          :max="120000"
+          :step="100"
+          placeholder="timeout"
+        />
+        <el-button class="col-span-12 justify-self-end" size="small" type="danger" text @click="removeGlobalPreAction(index)">
+          删除
+        </el-button>
+      </div>
+    </div>
+
     <!-- 添加新节点 -->
     <div class="mt-4">
       <!-- 提示信息 -->
@@ -88,6 +135,18 @@
             @input="editNode.jsPath = ''"
             placeholder="//div[@class='item']"
           />
+        </el-form-item>
+        <el-form-item
+          v-if="editNode.type === 'link'"
+          label="子页面列表项XPath"
+        >
+          <el-input
+            v-model="editNode.detailBaseSelector"
+            placeholder="//div[@class='relative size-full']"
+          />
+          <div class="text-xs text-gray-500 mt-1">
+            该链接跳转后的页面中，当前层数据项的根XPath。字段子节点将基于这个节点相对匹配。
+          </div>
         </el-form-item>
         <el-form-item label="JSPath">
           <el-input
@@ -146,6 +205,70 @@
             placeholder="100"
           />
         </el-form-item>
+        <el-form-item
+          v-if="editNode.type === 'next' || editNode.type === 'scroll'"
+          label="列表容器选择器"
+        >
+          <el-input
+            v-model="editNode.listBaseSelector"
+            placeholder="//div[@class='comment'] 或 .comment-item（用于详情页内嵌套列表）"
+          />
+          <div class="text-xs text-gray-500 mt-1">仅当作为链接子节点时：详情页嵌套列表每项容器的 XPath/JSPath</div>
+        </el-form-item>
+        <el-form-item
+          v-if="(editNode.type === 'next' || editNode.type === 'scroll') && editNode.listBaseSelector"
+          label="输出字段名"
+        >
+          <el-input v-model="editNode.listOutputKey" placeholder="items" />
+          <div class="text-xs text-gray-500 mt-1">嵌套列表输出到主记录中的字段名，默认 items</div>
+        </el-form-item>
+        <el-form-item
+          v-if="editNode.type === 'next' || editNode.type === 'scroll'"
+          label="该层前置动作"
+        >
+          <div class="w-full border border-blue-100 rounded p-2">
+            <div class="flex justify-end mb-2">
+              <el-button size="small" type="primary" @click="addEditNodePreAction">添加动作</el-button>
+            </div>
+            <div v-if="(editNode.preActions || []).length === 0" class="text-xs text-gray-500">未配置</div>
+            <div
+              v-for="(action, index) in (editNode.preActions || [])"
+              :key="`edit-action-${index}`"
+              class="grid grid-cols-12 gap-2 mb-2"
+            >
+              <el-select v-model="action.type" class="col-span-3" @change="onActionTypeChange(action)">
+                <el-option label="点击" value="click" />
+                <el-option label="等待元素" value="wait_for_selector" />
+                <el-option label="等待时间" value="wait_for_timeout" />
+              </el-select>
+              <el-select
+                v-if="action.type !== 'wait_for_timeout'"
+                v-model="action.selectorType"
+                class="col-span-2"
+              >
+                <el-option label="XPath" value="xpath" />
+                <el-option label="CSS" value="css" />
+              </el-select>
+              <el-input
+                v-if="action.type !== 'wait_for_timeout'"
+                v-model="action.selector"
+                class="col-span-5"
+                placeholder="//button[contains(.,'更多')] 或 .btn-next"
+              />
+              <el-input-number
+                v-model="action.timeout"
+                class="col-span-2"
+                :min="100"
+                :max="120000"
+                :step="100"
+                placeholder="timeout"
+              />
+              <el-button class="col-span-12 justify-self-end" size="small" type="danger" text @click="removeEditNodePreAction(index)">
+                删除
+              </el-button>
+            </div>
+          </div>
+        </el-form-item>
 
         <!-- 文字字段的内容格式选项 -->
         <el-form-item
@@ -174,6 +297,21 @@
             </div>
           </div>
         </el-form-item>
+        <el-form-item
+          v-if="['field','image','link'].includes(editNode.type)"
+          label="自定义处理JS"
+        >
+          <el-input
+            v-model="editNode.customTransformCode"
+            type="textarea"
+            :rows="3"
+            placeholder="return value ? value.trim() : null;"
+            class="font-mono text-xs"
+          />
+          <div class="text-xs text-gray-500 mt-1">
+            可选。入参为 value，必须 return 新值；返回 null/undefined 会置空该字段。
+          </div>
+        </el-form-item>
       </el-form>
       <span slot="footer" class="dialog-footer">
         <el-button @click="editDialogVisible = false">取消</el-button>
@@ -199,6 +337,7 @@
 import { ref, onMounted, computed } from "vue";
 import { useRouter } from "vue-router";
 import { useTaskFormStore } from "@/stores/taskForm";
+import type { PreActionConfig } from "@/stores/taskForm";
 import { xpathParseApi, jsPathParseApi } from "@/api/task";
 
 import { ElMessageBox, ElMessage } from "element-plus";
@@ -219,6 +358,11 @@ interface TreeNode {
   maxScroll?: number;
   waitTime?: number;
   maxItems?: number;
+  listBaseSelector?: string;
+  listOutputKey?: string;
+  preActions?: PreActionConfig[];
+  detailBaseSelector?: string;
+  customTransformCode?: string;
   contentFormat?: "text" | "html" | "markdown" | "smart"; // 内容格式，默认为text
 }
 
@@ -237,6 +381,11 @@ declare global {
     maxScroll?: number;
     waitTime?: number;
     maxItems?: number;
+    listBaseSelector?: string;
+    listOutputKey?: string;
+    preActions?: PreActionConfig[];
+    detailBaseSelector?: string;
+    customTransformCode?: string;
     contentFormat?: "text" | "html" | "markdown" | "smart"; // 内容格式，默认为text
   }
 }
@@ -249,12 +398,15 @@ const router = useRouter();
 
 
 
-// 检查是否已配置分页或滚动节点
-const hasPaginationOrScroll = computed(() => {
-  return store.treeData.some(node =>
-    node.type === 'next' || node.type === 'scroll'
-  );
-});
+function hasPaginationOrScrollInTree(nodes: TreeNode[]): boolean {
+  for (const node of nodes) {
+    if (node.type === "next" || node.type === "scroll") return true;
+    if (node.children?.length && hasPaginationOrScrollInTree(node.children)) return true;
+  }
+  return false;
+}
+
+const hasPaginationOrScroll = computed(() => hasPaginationOrScrollInTree(store.treeData as TreeNode[]));
 
 
 // 检测XPath或文本内容类型，返回推荐的XPath类型
@@ -417,6 +569,60 @@ const addChildDialogVisible = ref(false);
 const addChildParent = ref<any>(null);
 const tableLoading = ref(true);
 
+function createPreAction(): PreActionConfig {
+  return {
+    type: "click",
+    selectorType: "xpath",
+    selector: "",
+    timeout: 5000,
+  };
+}
+
+function onActionTypeChange(action: PreActionConfig) {
+  if (action.type === "wait_for_timeout") {
+    action.selectorType = undefined;
+    action.selector = "";
+    action.timeout = action.timeout || 1000;
+    return;
+  }
+  action.selectorType = action.selectorType || "xpath";
+  action.timeout = action.timeout || 5000;
+}
+
+function addGlobalPreAction() {
+  store.crawlerConfig.preActions.push(createPreAction());
+}
+
+function removeGlobalPreAction(index: number) {
+  store.crawlerConfig.preActions.splice(index, 1);
+}
+
+function ensureEditNodePreActions() {
+  if (!editNode.value.preActions) {
+    editNode.value.preActions = [];
+  }
+  return editNode.value.preActions;
+}
+
+function addEditNodePreAction() {
+  ensureEditNodePreActions().push(createPreAction());
+}
+
+function removeEditNodePreAction(index: number) {
+  ensureEditNodePreActions().splice(index, 1);
+}
+
+function validatePreActions(actions: PreActionConfig[]): boolean {
+  for (const action of actions) {
+    if (action.type === "wait_for_timeout") {
+      if (!action.timeout || action.timeout < 100) return false;
+      continue;
+    }
+    if (!action.selector?.trim()) return false;
+  }
+  return true;
+}
+
 
 
 
@@ -444,11 +650,14 @@ function getPageUrl(node: any): string {
 }
 
 // 处理子节点确认添加
-function handleChildNodeConfirm(children: any[]) {
+function handleChildNodeConfirm(payload: { children: any[]; detailBaseSelector?: string }) {
   if (!addChildParent.value) return;
 
   // 使用Vue响应式方式更新children
-  addChildParent.value.children.splice(0, addChildParent.value.children.length, ...children);
+  addChildParent.value.children.splice(0, addChildParent.value.children.length, ...payload.children);
+  if (addChildParent.value.type === "link") {
+    addChildParent.value.detailBaseSelector = payload.detailBaseSelector?.trim() || undefined;
+  }
   addChildParent.value.hasChildren = true;
   addChildDialogVisible.value = false;
   addChildParent.value = null;
@@ -562,6 +771,7 @@ function createNode(
     samples,
     hasChildren,
     children: type === "link" ? [] : undefined,
+    preActions: type === "next" || type === "scroll" ? [] : undefined,
     contentFormat: type === "field" ? finalContentFormat : undefined,
   };
 }
@@ -570,7 +780,11 @@ function createNode(
 function openEditDialog(node: TreeNode) {
   editNode.value = {
     ...node,
-    contentFormat: node.contentFormat ?? "text" // 确保contentFormat有默认值
+    contentFormat: node.contentFormat ?? "text", // 确保contentFormat有默认值
+    listOutputKey: node.listOutputKey ?? "items",
+    preActions: node.preActions ? node.preActions.map((a) => ({ ...a })) : [],
+    detailBaseSelector: node.detailBaseSelector ?? "",
+    customTransformCode: node.customTransformCode ?? "",
   };
   editDialogVisible.value = true;
 }
@@ -612,6 +826,21 @@ function saveEdit() {
         }
         if (!editNode.value.maxItems || editNode.value.maxItems < 1 || editNode.value.maxItems > 1000) {
           ElMessage.error('最大数量限制必须在1-1000之间');
+          return false;
+        }
+      }
+
+      if (editNode.value.type === 'link') {
+        editNode.value.detailBaseSelector = editNode.value.detailBaseSelector?.trim() || undefined;
+      }
+
+      if ((editNode.value.type === "next" || editNode.value.type === "scroll") && editNode.value.listBaseSelector?.trim()) {
+        editNode.value.listOutputKey = (editNode.value.listOutputKey || "items").trim() || "items";
+      }
+
+      if ((editNode.value.type === "next" || editNode.value.type === "scroll") && editNode.value.preActions?.length) {
+        if (!validatePreActions(editNode.value.preActions)) {
+          ElMessage.error("该层前置动作配置不完整，请检查选择器或超时时间");
           return false;
         }
       }
@@ -715,6 +944,7 @@ function addNewNode() {
   let maxScroll: number | undefined;
   let waitTime: number | undefined;
   let maxItems: number | undefined;
+  let hasChildren = false;
 
   if (newNodeType.value === "next") {
     label = "分页";
@@ -732,7 +962,7 @@ function addNewNode() {
     hasChildren = true; // 链接默认可以有子节点
   }
 
-  const node = createNode(newNodeType.value, label, selector, [""]);
+  const node = createNode(newNodeType.value, label, selector, [""], hasChildren);
   // 设置默认值
   if (maxPages !== undefined) node.maxPages = maxPages;
   if (maxScroll !== undefined) node.maxScroll = maxScroll;
@@ -751,10 +981,30 @@ function goPrev() {
   router.push("/crawleer/task-add/structure");
 }
 function goNext() {
+  if (!validatePreActions(store.crawlerConfig.preActions || [])) {
+    ElMessage.error("根层前置动作配置不完整");
+    return;
+  }
+
+  const findInvalidLayerActionNode = (nodes: TreeNode[]): TreeNode | null => {
+    for (const n of nodes) {
+      if ((n.type === "next" || n.type === "scroll") && n.preActions?.length && !validatePreActions(n.preActions)) {
+        return n;
+      }
+      if (n.children?.length) {
+        const bad = findInvalidLayerActionNode(n.children);
+        if (bad) return bad;
+      }
+    }
+    return null;
+  };
+  if (findInvalidLayerActionNode(store.treeData as TreeNode[])) {
+    ElMessage.error("存在层级前置动作配置不完整，请检查 next/scroll 节点");
+    return;
+  }
+
   // 检查是否配置了分页或滚动
-  const hasPaginationOrScroll = store.treeData.some(node =>
-    node.type === 'next' || node.type === 'scroll'
-  );
+  const hasPaginationOrScroll = hasPaginationOrScrollInTree(store.treeData as TreeNode[]);
 
   if (!hasPaginationOrScroll) {
     ElMessageBox.confirm(
@@ -771,9 +1021,19 @@ function goNext() {
     return;
   }
 
-  // 检查滚动节点是否配置了maxItems
-  const scrollNode = store.treeData.find(node => node.type === 'scroll');
-  if (scrollNode && (!scrollNode.maxItems || scrollNode.maxItems < 1)) {
+  // 检查所有滚动节点是否配置了maxItems（含嵌套）
+  const findScrollNodes = (nodes: TreeNode[]): TreeNode[] => {
+    const out: TreeNode[] = [];
+    for (const n of nodes) {
+      if (n.type === "scroll") out.push(n);
+      if (n.children?.length) out.push(...findScrollNodes(n.children));
+    }
+    return out;
+  };
+  const badScrollNode = findScrollNodes(store.treeData as TreeNode[]).find(
+    (n) => !n.maxItems || n.maxItems < 1,
+  );
+  if (badScrollNode) {
     ElMessage.error("滚动节点必须配置最大数量限制");
     return;
   }
