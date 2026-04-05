@@ -4,7 +4,9 @@ import * as fsSync from 'fs';
 import * as path from 'path';
 import archiver from 'archiver';
 import axios from 'axios';
+import * as playwright from 'playwright';
 import { SelectorConfig } from './dto/execute-task.dto';
+import { buildCookieHeader, createPlaywrightCookies } from './task-config.utils';
 
 interface PackageConfig {
   structure?: {
@@ -19,6 +21,12 @@ interface PackageConfig {
     texts?: boolean;
     maxFileSize?: number;
     timeout?: number;
+    strategy?: 'direct' | 'browser' | 'auto';
+    browserFlow?: {
+      detailPageField?: string;
+      detailPageWaitSelector?: string;
+      detailPageWaitTimeout?: number;
+    };
   };
   // 字段映射配置（可选，如果不提供则自动识别）
   fieldMapping?: {
@@ -32,9 +40,923 @@ interface ItemData {
   [key: string]: any;
 }
 
+interface DownloadRequestContext {
+  useCookie?: boolean;
+  cookieString?: string;
+  cookieDomain?: string;
+  fallbackUrl?: string;
+  downloadStrategy?: 'direct' | 'browser' | 'auto';
+  browserFlow?: {
+    detailPageField?: string;
+    detailPageWaitSelector?: string;
+    detailPageWaitTimeout?: number;
+  };
+  detailPageWaitSelector?: string;
+  detailPageWaitTimeout?: number;
+  browserRuntime?: BrowserDownloadRuntime;
+}
+
+interface BrowserDownloadSession {
+  browser: playwright.Browser;
+  context: playwright.BrowserContext;
+  page: playwright.Page;
+  currentReferrer?: string;
+}
+
+interface BrowserDownloadRuntime {
+  session?: BrowserDownloadSession;
+  queue?: Promise<unknown>;
+}
+
 @Injectable()
 export class FilePackageService {
   private readonly logger = new Logger(FilePackageService.name);
+  private readonly downloadUserAgent =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+
+  private isPixivAssetUrl(url: string): boolean {
+    try {
+      return /(^|\.)pximg\.net$/i.test(new URL(url).hostname);
+    } catch {
+      return /pximg\.net/i.test(url);
+    }
+  }
+
+  private resolvePixivReferer(requestContext?: DownloadRequestContext): string {
+    const fallbackUrl = requestContext?.fallbackUrl;
+    if (fallbackUrl) {
+      try {
+        const parsed = new URL(fallbackUrl);
+        if (/(^|\.)pixiv\.net$/i.test(parsed.hostname)) {
+          return fallbackUrl;
+        }
+      } catch {
+        // ignore invalid fallback url
+      }
+    }
+
+    return 'https://www.pixiv.net/';
+  }
+
+  private buildDownloadHeaders(
+    url: string,
+    cookieHeader?: string,
+    requestContext?: DownloadRequestContext,
+  ): Record<string, string> {
+    const headers: Record<string, string> = {
+      'User-Agent': this.downloadUserAgent,
+      Accept:
+        'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    };
+
+    if (cookieHeader) {
+      headers.Cookie = cookieHeader;
+    }
+
+    if (this.isPixivAssetUrl(url)) {
+      headers.Referer = this.resolvePixivReferer(requestContext);
+      headers.Origin = 'https://www.pixiv.net';
+    }
+
+    return headers;
+  }
+
+  private getDownloadStrategy(
+    packageConfig?: PackageConfig,
+  ): 'direct' | 'browser' | 'auto' {
+    const strategy = packageConfig?.download?.strategy;
+    if (strategy === 'direct' || strategy === 'browser') {
+      return strategy;
+    }
+    return 'auto';
+  }
+
+  private getBrowserRuntime(
+    requestContext?: DownloadRequestContext,
+  ): BrowserDownloadRuntime | undefined {
+    if (!requestContext) {
+      return undefined;
+    }
+
+    if (!requestContext.browserRuntime) {
+      requestContext.browserRuntime = {};
+    }
+
+    return requestContext.browserRuntime;
+  }
+
+  private getBrowserFlowConfig(
+    packageConfig?: PackageConfig,
+  ): DownloadRequestContext['browserFlow'] {
+    const browserFlow = packageConfig?.download?.browserFlow;
+    if (!browserFlow) {
+      return undefined;
+    }
+
+    return {
+      detailPageField: String(browserFlow.detailPageField || '').trim() || undefined,
+      detailPageWaitSelector:
+        String(browserFlow.detailPageWaitSelector || '').trim() || undefined,
+      detailPageWaitTimeout:
+        typeof browserFlow.detailPageWaitTimeout === 'number'
+          ? browserFlow.detailPageWaitTimeout
+          : undefined,
+    };
+  }
+
+  private getItemDetailPageUrl(
+    item: ItemData,
+    browserFlow?: DownloadRequestContext['browserFlow'],
+  ): string | undefined {
+    const fieldName = String(browserFlow?.detailPageField || '').trim();
+    if (!fieldName) {
+      return undefined;
+    }
+
+    const value = item?.[fieldName];
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+
+    const detailPageUrl = value.trim();
+    if (!/^https?:\/\//i.test(detailPageUrl)) {
+      return undefined;
+    }
+
+    return detailPageUrl;
+  }
+
+  private createItemDownloadRequestContext(
+    baseRequestContext: DownloadRequestContext,
+    item: ItemData,
+  ): DownloadRequestContext {
+    const detailPageUrl = this.getItemDetailPageUrl(
+      item,
+      baseRequestContext.browserFlow,
+    );
+
+    if (!detailPageUrl) {
+      return baseRequestContext;
+    }
+
+    return {
+      ...baseRequestContext,
+      fallbackUrl: detailPageUrl,
+      detailPageWaitSelector:
+        baseRequestContext.browserFlow?.detailPageWaitSelector,
+      detailPageWaitTimeout:
+        baseRequestContext.browserFlow?.detailPageWaitTimeout,
+      browserRuntime: baseRequestContext.browserRuntime,
+    };
+  }
+
+  private getBrowserReferrerUrl(
+    targetUrl: string,
+    requestContext?: DownloadRequestContext,
+  ): string {
+    const fallbackUrl = String(requestContext?.fallbackUrl ?? '').trim();
+    if (fallbackUrl) {
+      return fallbackUrl;
+    }
+
+    if (this.isPixivAssetUrl(targetUrl)) {
+      return 'https://www.pixiv.net/';
+    }
+
+    try {
+      const parsed = new URL(targetUrl);
+      return `${parsed.protocol}//${parsed.host}/`;
+    } catch {
+      return 'about:blank';
+    }
+  }
+
+  private async delay(ms: number): Promise<void> {
+    if (ms <= 0) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private normalizeUrlForCompare(url: string): string {
+    try {
+      const parsed = new URL(url);
+      parsed.hash = '';
+      return parsed.toString();
+    } catch {
+      return url;
+    }
+  }
+
+  private urlsReferToSameResource(actualUrl: string, targetUrl: string): boolean {
+    const normalizedActual = this.normalizeUrlForCompare(actualUrl);
+    const normalizedTarget = this.normalizeUrlForCompare(targetUrl);
+
+    return (
+      normalizedActual === normalizedTarget ||
+      normalizedActual.startsWith(normalizedTarget) ||
+      normalizedTarget.startsWith(normalizedActual)
+    );
+  }
+
+  private isHtmlLikeContentType(contentType?: string): boolean {
+    const normalized = String(contentType || '').toLowerCase();
+    return (
+      normalized.includes('text/html') ||
+      normalized.includes('application/xhtml') ||
+      normalized.includes('application/json') ||
+      normalized.includes('text/plain')
+    );
+  }
+
+  private isBinaryLikeContentType(contentType?: string): boolean {
+    const normalized = String(contentType || '').toLowerCase();
+
+    if (!normalized || this.isHtmlLikeContentType(normalized)) {
+      return false;
+    }
+
+    return (
+      normalized.startsWith('image/') ||
+      normalized.startsWith('video/') ||
+      normalized.startsWith('audio/') ||
+      normalized.startsWith('font/') ||
+      normalized.startsWith('application/octet-stream') ||
+      normalized.startsWith('application/pdf') ||
+      normalized.startsWith('application/zip') ||
+      normalized.startsWith('application/x-') ||
+      normalized.startsWith('application/vnd') ||
+      normalized.startsWith('application/ms')
+    );
+  }
+
+  private responseMatchesDownloadTarget(
+    response: playwright.Response,
+    targetUrl: string,
+  ): boolean {
+    if (this.urlsReferToSameResource(response.url(), targetUrl)) {
+      return true;
+    }
+
+    let currentRequest: playwright.Request | null = response.request();
+    while (currentRequest) {
+      if (this.urlsReferToSameResource(currentRequest.url(), targetUrl)) {
+        return true;
+      }
+
+      currentRequest = currentRequest.redirectedFrom();
+    }
+
+    return false;
+  }
+
+  private isBrowserDownloadResponseCandidate(
+    response: playwright.Response,
+    targetUrl: string,
+  ): boolean {
+    if (response.status() < 200 || response.status() >= 400) {
+      return false;
+    }
+
+    const headers = response.headers();
+    const contentType = headers['content-type'];
+    const contentDisposition = String(
+      headers['content-disposition'] || '',
+    ).toLowerCase();
+    const matchesTarget = this.responseMatchesDownloadTarget(response, targetUrl);
+    const isNavigationResponse = response.request().isNavigationRequest();
+    const isBinaryResponse = this.isBinaryLikeContentType(contentType);
+
+    if (contentDisposition.includes('attachment')) {
+      return true;
+    }
+
+    if (matchesTarget && !this.isHtmlLikeContentType(contentType)) {
+      return true;
+    }
+
+    return isNavigationResponse && isBinaryResponse;
+  }
+
+  private async saveResponseToFile(
+    response: playwright.Response,
+    maxSize: number,
+    destPath: string,
+  ): Promise<boolean> {
+    try {
+      const declaredSize = Number(response.headers()['content-length'] || 0);
+      if (declaredSize > maxSize) {
+        this.logger.warn(
+          `Browser response is larger than limit ${response.url()}: ${declaredSize}`,
+        );
+        return false;
+      }
+
+      const buffer = Buffer.from(await response.body());
+      if (buffer.length > maxSize) {
+        this.logger.warn(
+          `Browser response exceeded size limit ${response.url()}: ${buffer.length}`,
+        );
+        return false;
+      }
+
+      return this.saveBufferToFile(buffer, destPath);
+    } catch (error) {
+      this.logger.warn(
+        `Saving browser response failed ${response.url()}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return false;
+    }
+  }
+
+  private async savePlaywrightDownload(
+    download: playwright.Download,
+    maxSize: number,
+    destPath: string,
+  ): Promise<boolean> {
+    try {
+      const failure = await download.failure();
+      if (failure) {
+        this.logger.warn(`Playwright download failed: ${failure}`);
+        return false;
+      }
+
+      const tempPath = await download.path();
+      if (!tempPath) {
+        return false;
+      }
+
+      const stats = await fs.stat(tempPath);
+      if (stats.size > maxSize) {
+        this.logger.warn(
+          `Downloaded file is larger than limit ${download.url()}: ${stats.size}`,
+        );
+        return false;
+      }
+
+      const buffer = await fs.readFile(tempPath);
+      return this.saveBufferToFile(buffer, destPath);
+    } catch (error) {
+      this.logger.warn(
+        `Saving browser download failed ${download.url()}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return false;
+    }
+  }
+
+  private async waitForValue<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+  ): Promise<T | null> {
+    if (timeoutMs <= 0) {
+      return null;
+    }
+
+    return Promise.race([
+      promise,
+      this.delay(timeoutMs).then(() => null),
+    ]) as Promise<T | null>;
+  }
+
+  private async triggerPageDownload(
+    page: playwright.Page,
+    targetUrl: string,
+    target: '_blank' | '_self',
+  ): Promise<void> {
+    await page.evaluate(
+      ({ downloadUrl, anchorTarget }) => {
+        const anchor = document.createElement('a');
+        anchor.href = downloadUrl;
+        anchor.target = anchorTarget;
+        anchor.rel = 'noopener noreferrer';
+        anchor.style.display = 'none';
+
+        const mountPoint = document.body || document.documentElement;
+        mountPoint.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+      },
+      {
+        downloadUrl: targetUrl,
+        anchorTarget: target,
+      },
+    );
+  }
+
+  private async saveResponseCandidates(
+    responses: playwright.Response[],
+    maxSize: number,
+    destPath: string,
+  ): Promise<boolean> {
+    for (let index = responses.length - 1; index >= 0; index -= 1) {
+      if (await this.saveResponseToFile(responses[index], maxSize, destPath)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private async restoreBrowserReferrer(
+    session: BrowserDownloadSession,
+    referrerUrl: string,
+    timeout: number,
+  ): Promise<void> {
+    if (
+      referrerUrl === 'about:blank' ||
+      session.page.isClosed() ||
+      this.urlsReferToSameResource(session.page.url(), referrerUrl)
+    ) {
+      session.currentReferrer = referrerUrl;
+      return;
+    }
+
+    await session.page
+      .goto(referrerUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: Math.min(timeout, 10000),
+      })
+      .catch(() => undefined);
+    session.currentReferrer = referrerUrl;
+  }
+
+  private async prepareBrowserEntryPage(
+    session: BrowserDownloadSession,
+    entryUrl: string,
+    timeout: number,
+    requestContext?: DownloadRequestContext,
+  ): Promise<void> {
+    if (entryUrl === 'about:blank') {
+      session.currentReferrer = entryUrl;
+      return;
+    }
+
+    if (!this.urlsReferToSameResource(session.page.url(), entryUrl)) {
+      await session.page
+        .goto(entryUrl, {
+          waitUntil: 'domcontentloaded',
+          timeout,
+        })
+        .catch(() => undefined);
+    }
+
+    const waitSelector = String(
+      requestContext?.detailPageWaitSelector ||
+        requestContext?.browserFlow?.detailPageWaitSelector ||
+        '',
+    ).trim();
+    const waitTimeout =
+      requestContext?.detailPageWaitTimeout ??
+      requestContext?.browserFlow?.detailPageWaitTimeout ??
+      Math.min(timeout, 8000);
+
+    if (waitSelector) {
+      await session.page
+        .waitForSelector(waitSelector, {
+          timeout: Math.min(waitTimeout, timeout),
+          state: 'attached',
+        })
+        .catch(() => undefined);
+    }
+
+    session.currentReferrer = entryUrl;
+  }
+
+  private async runBrowserDownloadInQueue<T>(
+    requestContext: DownloadRequestContext | undefined,
+    task: () => Promise<T>,
+  ): Promise<T> {
+    const runtime = this.getBrowserRuntime(requestContext);
+    if (!runtime) {
+      return task();
+    }
+
+    const previous = runtime.queue ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(task);
+    runtime.queue = current.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    return current;
+  }
+
+  private async runBrowserDownloadAttempt(
+    session: BrowserDownloadSession,
+    url: string,
+    destPath: string,
+    maxSize: number,
+    timeout: number,
+    label: string,
+    action: (page: playwright.Page) => Promise<void>,
+  ): Promise<boolean> {
+    const responseCandidates: playwright.Response[] = [];
+    const seenResponses = new Set<string>();
+    const responseHandler = (response: playwright.Response) => {
+      if (!this.isBrowserDownloadResponseCandidate(response, url)) {
+        return;
+      }
+
+      const responseKey = `${response.status()}:${response.url()}`;
+      if (seenResponses.has(responseKey)) {
+        return;
+      }
+
+      seenResponses.add(responseKey);
+      responseCandidates.push(response);
+    };
+
+    session.context.on('response', responseHandler);
+    const pageDownloadPromise = session.page
+      .waitForEvent('download', { timeout })
+      .catch(() => null);
+    const popupPromise = session.context
+      .waitForEvent('page', { timeout })
+      .catch(() => null);
+    let popupPage: playwright.Page | null = null;
+    let popupDownloadPromise: Promise<playwright.Download | null> | null = null;
+
+    try {
+      await action(session.page);
+
+      const quickWindow = Math.min(Math.max(Math.floor(timeout / 5), 1000), 2500);
+      const popupWindow = Math.min(quickWindow, 1500);
+
+      popupPage = await this.waitForValue(popupPromise, popupWindow);
+      if (popupPage) {
+        popupDownloadPromise = popupPage
+          .waitForEvent('download', { timeout })
+          .catch(() => null);
+
+        await popupPage
+          .waitForLoadState('domcontentloaded', { timeout: quickWindow })
+          .catch(() => undefined);
+      }
+
+      const pageDownload = await this.waitForValue(
+        pageDownloadPromise,
+        quickWindow,
+      );
+      if (
+        pageDownload &&
+        (await this.savePlaywrightDownload(pageDownload, maxSize, destPath))
+      ) {
+        return true;
+      }
+
+      if (popupDownloadPromise) {
+        const popupDownload = await this.waitForValue(
+          popupDownloadPromise,
+          quickWindow,
+        );
+        if (
+          popupDownload &&
+          (await this.savePlaywrightDownload(popupDownload, maxSize, destPath))
+        ) {
+          return true;
+        }
+      }
+
+      await this.delay(Math.min(Math.max(Math.floor(timeout / 6), 400), 1500));
+      if (
+        responseCandidates.length > 0 &&
+        (await this.saveResponseCandidates(responseCandidates, maxSize, destPath))
+      ) {
+        return true;
+      }
+
+      const remainingTimeout = Math.max(timeout - quickWindow * 2, 1000);
+
+      if (!popupPage) {
+        popupPage = await this.waitForValue(popupPromise, remainingTimeout);
+        if (popupPage) {
+          popupDownloadPromise = popupPage
+            .waitForEvent('download', { timeout: remainingTimeout })
+            .catch(() => null);
+          await popupPage
+            .waitForLoadState('domcontentloaded', {
+              timeout: Math.min(remainingTimeout, 5000),
+            })
+            .catch(() => undefined);
+        }
+      }
+
+      const latePageDownload = await this.waitForValue(
+        pageDownloadPromise,
+        remainingTimeout,
+      );
+      if (
+        latePageDownload &&
+        (await this.savePlaywrightDownload(latePageDownload, maxSize, destPath))
+      ) {
+        return true;
+      }
+
+      if (popupDownloadPromise) {
+        const latePopupDownload = await this.waitForValue(
+          popupDownloadPromise,
+          remainingTimeout,
+        );
+        if (
+          latePopupDownload &&
+          (await this.savePlaywrightDownload(latePopupDownload, maxSize, destPath))
+        ) {
+          return true;
+        }
+      }
+
+      if (
+        responseCandidates.length > 0 &&
+        (await this.saveResponseCandidates(responseCandidates, maxSize, destPath))
+      ) {
+        return true;
+      }
+
+      this.logger.debug(
+        `Browser download attempt did not capture a file [${label}] ${url}`,
+      );
+      return false;
+    } catch (error) {
+      this.logger.warn(
+        `Browser download attempt failed [${label}] ${url}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return false;
+    } finally {
+      session.context.off('response', responseHandler);
+
+      if (popupPage && !popupPage.isClosed()) {
+        await popupPage.close().catch(() => undefined);
+      }
+    }
+  }
+
+  private async ensureBrowserDownloadSession(
+    targetUrl: string,
+    requestContext?: DownloadRequestContext,
+    timeout: number = 30000,
+  ): Promise<BrowserDownloadSession> {
+    const runtime = this.getBrowserRuntime(requestContext);
+    if (runtime?.session) {
+      return runtime.session;
+    }
+
+    const browser = await playwright.chromium.launch({
+      headless: true,
+      args: ['--disable-blink-features=AutomationControlled'],
+    });
+
+    const context = await browser.newContext({
+      acceptDownloads: true,
+      userAgent: this.downloadUserAgent,
+      locale: 'zh-CN',
+      timezoneId: 'Asia/Shanghai',
+    });
+    const page = await context.newPage();
+    const referrerUrl = this.getBrowserReferrerUrl(targetUrl, requestContext);
+
+    if (requestContext?.useCookie && requestContext.cookieString) {
+      const cookies = createPlaywrightCookies(
+        requestContext.cookieString,
+        referrerUrl === 'about:blank' ? targetUrl : referrerUrl,
+        requestContext.cookieDomain,
+      );
+
+      if (cookies.length > 0) {
+        await context
+          .addCookies(
+            cookies as unknown as Parameters<
+              playwright.BrowserContext['addCookies']
+            >[0],
+          )
+          .catch(() => undefined);
+      }
+    }
+
+    if (referrerUrl !== 'about:blank') {
+      await page
+        .goto(referrerUrl, {
+          waitUntil: 'domcontentloaded',
+          timeout,
+        })
+        .catch(() => undefined);
+    }
+
+    const session: BrowserDownloadSession = {
+      browser,
+      context,
+      page,
+      currentReferrer: referrerUrl,
+    };
+
+    if (runtime) {
+      runtime.session = session;
+    }
+
+    return session;
+  }
+
+  private async closeBrowserDownloadSession(
+    requestContext?: DownloadRequestContext,
+  ): Promise<void> {
+    const runtime = this.getBrowserRuntime(requestContext);
+    const session = runtime?.session;
+    if (!session) {
+      return;
+    }
+
+    await session.context.close().catch(() => undefined);
+    await session.browser.close().catch(() => undefined);
+    runtime.session = undefined;
+    runtime.queue = undefined;
+  }
+
+  private async saveBufferToFile(
+    buffer: Buffer,
+    destPath: string,
+  ): Promise<boolean> {
+    try {
+      await fs.mkdir(path.dirname(destPath), { recursive: true });
+      await fs.writeFile(destPath, buffer);
+      return true;
+    } catch (error) {
+      this.logger.warn(
+        `保存下载内容失败 ${destPath}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return false;
+    }
+  }
+
+  private async downloadFileViaBrowser(
+    url: string,
+    destPath: string,
+    maxSize: number,
+    timeout: number,
+    requestContext?: DownloadRequestContext,
+  ): Promise<boolean> {
+    return this.runBrowserDownloadInQueue(requestContext, async () => {
+      try {
+      const session = await this.ensureBrowserDownloadSession(
+        url,
+        requestContext,
+        timeout,
+      );
+      const entryUrl = this.getBrowserReferrerUrl(url, requestContext);
+
+      await this.prepareBrowserEntryPage(
+        session,
+        entryUrl,
+        timeout,
+        requestContext,
+      );
+
+      const attempts: Array<{
+        label: string;
+        action: (page: playwright.Page) => Promise<void>;
+      }> = [
+        {
+          label: 'popup-anchor-click',
+          action: (page) => this.triggerPageDownload(page, url, '_blank'),
+        },
+        {
+          label: 'same-tab-anchor-click',
+          action: (page) => this.triggerPageDownload(page, url, '_self'),
+        },
+        {
+          label: 'same-tab-navigation',
+          action: async (page) => {
+            await page
+              .goto(url, {
+                waitUntil: 'domcontentloaded',
+                timeout,
+              })
+              .catch(() => undefined);
+          },
+        },
+      ];
+
+      for (const attempt of attempts) {
+        const success = await this.runBrowserDownloadAttempt(
+          session,
+          url,
+          destPath,
+          maxSize,
+          timeout,
+          attempt.label,
+          attempt.action,
+        );
+
+        await this.restoreBrowserReferrer(session, entryUrl, timeout);
+
+        if (success) {
+          return true;
+        }
+      }
+
+      return false;
+    } catch (error) {
+      this.logger.warn(
+        `浏览器模式下载失败 ${url}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return false;
+    }
+    });
+  }
+
+  private async downloadFileDirect(
+    url: string,
+    destPath: string,
+    maxSize: number,
+    timeout: number,
+    requestContext?: DownloadRequestContext,
+  ): Promise<boolean> {
+    try {
+      const cookieHeader =
+        requestContext?.useCookie && requestContext.cookieString
+          ? buildCookieHeader(
+              requestContext.cookieString,
+              url,
+              requestContext.cookieDomain,
+              requestContext.fallbackUrl,
+            )
+          : undefined;
+
+      const response = await axios({
+        method: 'GET',
+        url: url,
+        responseType: 'stream',
+        timeout: timeout,
+        maxContentLength: maxSize,
+        maxBodyLength: maxSize,
+        headers: this.buildDownloadHeaders(url, cookieHeader, requestContext),
+      });
+
+      await fs.mkdir(path.dirname(destPath), { recursive: true });
+
+      const writer = fsSync.createWriteStream(destPath);
+      response.data.pipe(writer);
+
+      return new Promise((resolve) => {
+        writer.on('finish', () => resolve(true));
+        writer.on('error', () => resolve(false));
+        response.data.on('error', () => resolve(false));
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  private async downloadResource(
+    url: string,
+    destPath: string,
+    maxSize: number = 10 * 1024 * 1024,
+    timeout: number = 30000,
+    requestContext?: DownloadRequestContext,
+  ): Promise<boolean> {
+    const strategy = requestContext?.downloadStrategy ?? 'auto';
+
+    if (strategy === 'browser') {
+      return this.downloadFileViaBrowser(
+        url,
+        destPath,
+        maxSize,
+        timeout,
+        requestContext,
+      );
+    }
+
+    const directSuccess = await this.downloadFileDirect(
+      url,
+      destPath,
+      maxSize,
+      timeout,
+      requestContext,
+    );
+
+    if (directSuccess || strategy === 'direct') {
+      return directSuccess;
+    }
+
+    this.logger.debug(`Direct download failed, falling back to browser mode: ${url}`);
+    return this.downloadFileViaBrowser(
+      url,
+      destPath,
+      maxSize,
+      timeout,
+      requestContext,
+    );
+  }
 
   /**
    * 下载文件
@@ -44,8 +966,19 @@ export class FilePackageService {
     destPath: string,
     maxSize: number = 10 * 1024 * 1024, // 默认10MB
     timeout: number = 30000, // 默认30秒
+    requestContext?: DownloadRequestContext,
   ): Promise<boolean> {
     try {
+      const cookieHeader =
+        requestContext?.useCookie && requestContext.cookieString
+          ? buildCookieHeader(
+              requestContext.cookieString,
+              url,
+              requestContext.cookieDomain,
+              requestContext.fallbackUrl,
+            )
+          : undefined;
+
       const response = await axios({
         method: 'GET',
         url: url,
@@ -53,6 +986,7 @@ export class FilePackageService {
         timeout: timeout,
         maxContentLength: maxSize,
         maxBodyLength: maxSize,
+        headers: this.buildDownloadHeaders(url, cookieHeader, requestContext),
       });
 
       // 确保目录存在
@@ -233,6 +1167,7 @@ export class FilePackageService {
     outputPath: string,
     taskId: number,
     executionId: number,
+    requestContext?: DownloadRequestContext,
   ): Promise<string> {
     const timestamp = Date.now().toString();
     const tempDir = path.join(
@@ -241,6 +1176,12 @@ export class FilePackageService {
       'temp',
       `package_${taskId}_${executionId}_${timestamp}`,
     );
+    const downloadRequestContext: DownloadRequestContext = {
+      ...(requestContext || {}),
+      downloadStrategy: this.getDownloadStrategy(packageConfig),
+      browserFlow: this.getBrowserFlowConfig(packageConfig),
+      browserRuntime: {},
+    };
 
     try {
       // 创建临时目录
@@ -262,6 +1203,10 @@ export class FilePackageService {
       // 处理每个数据项
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
+        const itemDownloadRequestContext = this.createItemDownloadRequestContext(
+          downloadRequestContext,
+          item,
+        );
 
         // 下载图片
         if (download.images !== false && imageFields.length > 0) {
@@ -279,9 +1224,20 @@ export class FilePackageService {
               }
               
               const fullImagePath = path.join(tempDir, imagePath);
+              const imageDownloadRequestContext =
+                this.createItemDownloadRequestContext(
+                  downloadRequestContext,
+                  item,
+                );
               
               downloadTasks.push(
-                this.downloadFile(imageUrl, fullImagePath, maxFileSize, timeout).then((success) => {
+                this.downloadResource(
+                  imageUrl,
+                  fullImagePath,
+                  maxFileSize,
+                  timeout,
+                  imageDownloadRequestContext,
+                ).then((success) => {
                   if (success) {
                     this.logger.log(`已下载图片: ${imagePath}`);
                   }
@@ -307,9 +1263,20 @@ export class FilePackageService {
               }
               
               const fullFilePath = path.join(tempDir, filePath);
+              const fileDownloadRequestContext =
+                this.createItemDownloadRequestContext(
+                  downloadRequestContext,
+                  item,
+                );
               
               downloadTasks.push(
-                this.downloadFile(fileUrl, fullFilePath, maxFileSize, timeout).then((success) => {
+                this.downloadResource(
+                  fileUrl,
+                  fullFilePath,
+                  maxFileSize,
+                  timeout,
+                  fileDownloadRequestContext,
+                ).then((success) => {
                   if (success) {
                     this.logger.log(`已下载文件: ${filePath}`);
                   }
@@ -387,6 +1354,7 @@ export class FilePackageService {
 
       // 清理临时目录
       await this.cleanupDirectory(tempDir);
+      await this.closeBrowserDownloadSession(downloadRequestContext);
 
       this.logger.log(`打包完成: ${zipPath}`);
       return zipPath;
@@ -398,6 +1366,7 @@ export class FilePackageService {
       } catch (cleanupError) {
         this.logger.error('清理临时目录失败:', cleanupError);
       }
+      await this.closeBrowserDownloadSession(downloadRequestContext);
       throw error;
     }
   }
@@ -412,6 +1381,7 @@ export class FilePackageService {
     outputPath: string,
     taskId: number,
     executionId: number,
+    requestContext?: DownloadRequestContext,
   ): Promise<string> {
     const timestamp = Date.now().toString();
     const tempDir = path.join(
@@ -420,6 +1390,12 @@ export class FilePackageService {
       'temp',
       `package_${taskId}_${executionId}_${timestamp}`,
     );
+    const downloadRequestContext: DownloadRequestContext = {
+      ...(requestContext || {}),
+      downloadStrategy: this.getDownloadStrategy(packageConfig),
+      browserFlow: this.getBrowserFlowConfig(packageConfig),
+      browserRuntime: {},
+    };
 
     try {
       // 创建临时目录
@@ -460,7 +1436,16 @@ export class FilePackageService {
               const fullImagePath = path.join(tempDir, imagePath);
               
               downloadTasks.push(
-                this.downloadFile(imageUrl, fullImagePath, maxFileSize, timeout).then((success) => {
+                this.downloadResource(
+                  imageUrl,
+                  fullImagePath,
+                  maxFileSize,
+                  timeout,
+                  this.createItemDownloadRequestContext(
+                    downloadRequestContext,
+                    item,
+                  ),
+                ).then((success) => {
                   if (success) {
                     this.logger.log(`已下载图片: ${imagePath}`);
                   }
@@ -488,7 +1473,16 @@ export class FilePackageService {
               const fullFilePath = path.join(tempDir, filePath);
               
               downloadTasks.push(
-                this.downloadFile(fileUrl, fullFilePath, maxFileSize, timeout).then((success) => {
+                this.downloadResource(
+                  fileUrl,
+                  fullFilePath,
+                  maxFileSize,
+                  timeout,
+                  this.createItemDownloadRequestContext(
+                    downloadRequestContext,
+                    item,
+                  ),
+                ).then((success) => {
                   if (success) {
                     this.logger.log(`已下载文件: ${filePath}`);
                   }
@@ -566,6 +1560,7 @@ export class FilePackageService {
 
       // 清理临时目录
       await this.cleanupDirectory(tempDir);
+      await this.closeBrowserDownloadSession(downloadRequestContext);
 
       this.logger.log(`打包完成: ${zipPath}`);
       return zipPath;
@@ -577,6 +1572,7 @@ export class FilePackageService {
       } catch (cleanupError) {
         this.logger.error('清理临时目录失败:', cleanupError);
       }
+      await this.closeBrowserDownloadSession(downloadRequestContext);
       throw error;
     }
   }

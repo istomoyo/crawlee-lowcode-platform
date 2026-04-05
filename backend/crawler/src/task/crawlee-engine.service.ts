@@ -15,6 +15,7 @@ import {
   NestedExtractContext,
   PreActionConfig,
   SelectorConfig,
+  TaskNotificationConfig,
 } from './dto/execute-task.dto';
 import { TaskGateway } from './task.gateway';
 import { promises as fs } from 'fs';
@@ -22,11 +23,27 @@ import { existsSync } from 'fs';
 import { FilePackageService } from './file-package.service';
 import TurndownService from 'turndown';
 import * as playwright from 'playwright';
+import {
+  createPlaywrightCookies,
+  itemMatchesResultFilters,
+} from './task-config.utils';
+import { formatHtmlFragment } from './content-extraction.utils';
+import { SystemSettingsService } from '../admin/system-settings.service';
+import { SettingKey } from '../admin/entities/system-setting.entity';
+import { MailService, MailTransportConfig } from '../mail/mail.service';
 
 interface CrawlerTask {
   taskId: number;
   executionId: number;
   config: CrawleeTaskConfig;
+}
+
+interface ActiveCrawlerTask {
+  taskId: number;
+  executionId: number;
+  crawler?: PlaywrightCrawler;
+  stopRequested: boolean;
+  stopReason?: string;
 }
 
 @Injectable()
@@ -36,6 +53,7 @@ export class CrawleeEngineService {
   private isProcessing = false;
   private crawler: PlaywrightCrawler;
   private detachedDetailBrowser: playwright.Browser | null = null;
+  private readonly activeTasks = new Map<number, ActiveCrawlerTask>();
 
   // 鍏ㄥ眬 Turndown 瀹炰緥锛岀敤浜庡皢 HTML 杞负 Markdown
   private static turndownService = new TurndownService({
@@ -68,6 +86,8 @@ export class CrawleeEngineService {
     private readonly executionRepository: Repository<Execution>,
     private readonly taskGateway: TaskGateway,
     private readonly filePackageService: FilePackageService,
+    private readonly systemSettingsService: SystemSettingsService,
+    private readonly mailService: MailService,
   ) {
     // Extra safeguard: avoid Windows process listing parser crash in Crawlee systemInfoV2.
     Configuration.getGlobalConfig().set('systemInfoV2', false);
@@ -148,6 +168,13 @@ export class CrawleeEngineService {
    */
   private async executeCrawlerTask(crawlerTask: CrawlerTask) {
     const { taskId, executionId, config } = crawlerTask;
+    const activeTask: ActiveCrawlerTask = {
+      taskId,
+      executionId,
+      stopRequested: false,
+    };
+    this.activeTasks.set(taskId, activeTask);
+    const stopWatcher = this.startTaskStopWatcher(activeTask);
     this.logger.log(`寮€濮嬫墽琛屼换鍔?${taskId}, 鎵цID: ${executionId}`);
 
     // 澹版槑鍙橀噺鐢ㄤ簬缁熻淇℃伅
@@ -215,6 +242,7 @@ export class CrawleeEngineService {
       const mapWithConcurrencyLimit = this.mapWithConcurrencyLimit.bind(this);
       const getDetailItemConcurrency =
         this.getDetailItemConcurrency.bind(this);
+      const ensureTaskNotStopped = this.ensureTaskNotStopped.bind(this);
 
       // 鍒涘缓涓撶敤鐨刢rawler瀹炰緥
       const taskCrawler = new PlaywrightCrawler({
@@ -229,12 +257,17 @@ export class CrawleeEngineService {
         launchContext: {
           launchOptions: {
             headless: config.headless !== false,
-            args: config.proxyUrl
-              ? [`--proxy-server=${config.proxyUrl}`]
-              : undefined,
           },
         },
+        preNavigationHooks: [
+          async ({ page, request }) => {
+            ensureTaskNotStopped(taskId);
+            await this.applyConfiguredCookies(page, request.url, config);
+            await this.waitBeforeNavigation(page, config);
+          },
+        ],
         async requestHandler({ request, page, response }) {
+          ensureTaskNotStopped(taskId);
           const requestIndexFromMeta = Number(request.userData?.requestIndex);
           const requestIndexByUrl =
             config.urls.findIndex((configuredUrl) =>
@@ -279,6 +312,7 @@ export class CrawleeEngineService {
           let validItems: any[] = [];
 
           try {
+            ensureTaskNotStopped(taskId);
             // 璁剧疆瑙嗗彛
             if (config.viewport) {
               await page.setViewportSize(config.viewport);
@@ -569,6 +603,23 @@ export class CrawleeEngineService {
               throw new Error(errorMessage);
             }
 
+            const itemsBeforeFilter = validItems.length;
+            validItems = validItems.filter((itemData) =>
+              itemMatchesResultFilters(itemData, config.resultFilters),
+            );
+
+            if (itemsBeforeFilter !== validItems.length) {
+              logger.log(
+                `Result filters removed ${itemsBeforeFilter - validItems.length} records on ${request.url}`,
+              );
+            }
+
+            if (itemsBeforeFilter > 0 && validItems.length === 0) {
+              logger.log(
+                `All records on ${request.url} were filtered out by result filters`,
+              );
+            }
+
             // 鑾峰彇鎵€鏈塱mage绫诲瀷鐨勫瓧娈靛悕锛岀敤浜庡悗缁鐞?
             const imageFields = (config.selectors || [])
               .filter(selector => selector.type === 'image')
@@ -714,7 +765,19 @@ export class CrawleeEngineService {
       });
 
       // 鎵ц鐖櫕
+      activeTask.crawler = taskCrawler;
       await taskCrawler.run();
+
+      if (this.isTaskStopRequested(taskId)) {
+        await this.finalizeStoppedTask(
+          taskId,
+          executionId,
+          config,
+          this.getTaskStopReason(taskId),
+        );
+        await requestQueue.drop().catch(() => undefined);
+        return;
+      }
 
       // 鑾峰彇缁熻淇℃伅
       const datasetInfo = await dataset.getInfo();
@@ -761,6 +824,17 @@ export class CrawleeEngineService {
         resultMessage += ` (宸茶繃婊?${totalExtractedItems - totalValidItems} 鏉＄┖鏁版嵁)`;
       }
 
+      if (this.isTaskStopRequested(taskId)) {
+        await this.finalizeStoppedTask(
+          taskId,
+          executionId,
+          config,
+          this.getTaskStopReason(taskId),
+        );
+        await requestQueue.drop().catch(() => undefined);
+        return;
+      }
+
       await this.updateExecutionStatus(executionId, 'success', resultMessage);
 
       // 鏇存柊浠诲姟鐨勬埅鍥捐矾寰勶紙鎴浘宸插湪requestHandler涓繚瀛橈級
@@ -805,11 +879,29 @@ export class CrawleeEngineService {
       });
 
       // 娓呯悊璧勬簮
+      await this.sendTaskExecutionNotification({
+        taskId,
+        executionId,
+        config,
+        status: 'success',
+        log: resultMessage,
+        itemCount: filteredItemCount,
+        previewItems: allData.items,
+      });
       await requestQueue.drop();
       // 娉ㄦ剰锛欴ataset鍜孠eyValueStore閫氬父淇濈暀鐢ㄤ簬鍚庣画鍒嗘瀽
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error || '鏈煡閿欒');
       const errorObj = error instanceof Error ? error : new Error(String(error || '鏈煡閿欒'));
+      if (this.isTaskStopRequested(taskId)) {
+        await this.finalizeStoppedTask(
+          taskId,
+          executionId,
+          config,
+          this.getTaskStopReason(taskId),
+        );
+        return;
+      }
       this.logger.error(`浠诲姟 ${taskId} 鎵ц澶辫触:`, errorObj);
       await this.updateExecutionStatus(
         executionId,
@@ -824,6 +916,14 @@ export class CrawleeEngineService {
       });
 
       // 鑾峰彇浠诲姟淇℃伅鐢ㄤ簬骞挎挱
+      await this.sendTaskExecutionNotification({
+        taskId,
+        executionId,
+        config,
+        status: 'failed',
+        log: errorMessage,
+      });
+
       const taskFailedInfo = await this.taskRepository.findOne({
         where: { id: taskId },
       });
@@ -839,6 +939,8 @@ export class CrawleeEngineService {
 
       throw error;
     } finally {
+      clearInterval(stopWatcher);
+      this.activeTasks.delete(taskId);
       await this.closeDetachedDetailBrowser();
     }
   }
@@ -881,11 +983,10 @@ export class CrawleeEngineService {
           if (format === 'html' || format === 'markdown' || format === 'smart') {
             // 鍏堟嬁鍒板厓绱?HTML锛屽啀鏍规嵁閰嶇疆鍐冲畾鏄惁杞负 Markdown
             const html = await element.innerHTML();
-            if (format === 'markdown' || format === 'smart') {
-              value = CrawleeEngineService.convertHtmlToMarkdown(html);
-            } else {
-              value = html;
-            }
+            value =
+              format === 'html'
+                ? html
+                : formatHtmlFragment(html, format, page.url());
           } else {
             value = await element.textContent();
           }
@@ -989,11 +1090,10 @@ export class CrawleeEngineService {
           const format = contentFormat || 'text';
           if (format === 'html' || format === 'markdown' || format === 'smart') {
             const html = await element.innerHTML();
-            if (format === 'markdown' || format === 'smart') {
-              value = CrawleeEngineService.convertHtmlToMarkdown(html);
-            } else {
-              value = html;
-            }
+            value =
+              format === 'html'
+                ? html
+                : formatHtmlFragment(html, format, page.url());
           } else {
             value = await element.textContent();
           }
@@ -1264,6 +1364,8 @@ export class CrawleeEngineService {
   ): Promise<void> {
     const detailPage = await this.createDetachedDetailPage(config);
     try {
+      await this.applyConfiguredCookies(detailPage, linkUrl, config);
+      await this.waitBeforeNavigation(detailPage, config);
       await detailPage.goto(linkUrl, {
         waitUntil: 'domcontentloaded',
         timeout: config.navigationTimeout || 60000,
@@ -1463,6 +1565,57 @@ export class CrawleeEngineService {
       .waitForLoadState('networkidle', { timeout: Math.min(delayMs, 1500) })
       .catch(() => undefined);
     await page.waitForTimeout(delayMs).catch(() => undefined);
+  }
+
+  private async waitBeforeNavigation(
+    page: any,
+    config: CrawleeTaskConfig,
+  ): Promise<void> {
+    if (!page || page?.isClosed?.()) {
+      return;
+    }
+
+    const delayMs = Math.max(
+      0,
+      Math.min(Number(config.requestInterval) || 0, 10_000),
+    );
+
+    if (delayMs > 0) {
+      await page.waitForTimeout(delayMs).catch(() => undefined);
+    }
+  }
+
+  private async applyConfiguredCookies(
+    page: any,
+    targetUrl: string,
+    config: CrawleeTaskConfig,
+  ): Promise<void> {
+    if (!config.useCookie || !config.cookieString || !page?.context) {
+      return;
+    }
+
+    const cookies = createPlaywrightCookies(
+      config.cookieString,
+      targetUrl,
+      config.cookieDomain,
+    );
+
+    if (cookies.length === 0) {
+      return;
+    }
+
+    await page
+      .context()
+      .addCookies(
+        cookies as unknown as Parameters<playwright.BrowserContext['addCookies']>[0],
+      )
+      .catch((error) => {
+        this.logger.warn(
+          `Failed to apply configured cookies for ${targetUrl}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
   }
 
   private getDetailItemConcurrency(
@@ -1787,6 +1940,346 @@ export class CrawleeEngineService {
   /**
    * 鑾峰彇闃熷垪鐘舵€?
    */
+  async requestTaskStop(
+    taskId: number,
+    stopReason = 'Task stopped by administrator',
+  ): Promise<'running' | 'queued' | 'not_found'> {
+    const queuedIndex = this.taskQueue.findIndex((task) => task.taskId === taskId);
+    if (queuedIndex >= 0) {
+      const [queuedTask] = this.taskQueue.splice(queuedIndex, 1);
+      if (queuedTask) {
+        await this.finalizeStoppedTask(
+          queuedTask.taskId,
+          queuedTask.executionId,
+          queuedTask.config,
+          stopReason,
+        );
+        return 'queued';
+      }
+    }
+
+    const activeTask = this.activeTasks.get(taskId);
+    if (!activeTask) {
+      return 'not_found';
+    }
+
+    activeTask.stopRequested = true;
+    activeTask.stopReason = stopReason;
+
+    await this.updateExecutionStatus(
+      activeTask.executionId,
+      'running',
+      `${stopReason} (interrupting current run...)`,
+    );
+
+    await Promise.allSettled([
+      activeTask.crawler?.teardown() ?? Promise.resolve(),
+      this.closeDetachedDetailBrowser(),
+    ]);
+
+    return 'running';
+  }
+
+  private startTaskStopWatcher(activeTask: ActiveCrawlerTask): NodeJS.Timeout {
+    let checking = false;
+
+    return setInterval(async () => {
+      if (checking || activeTask.stopRequested) {
+        return;
+      }
+
+      checking = true;
+      try {
+        const task = await this.taskRepository.findOne({
+          where: { id: activeTask.taskId },
+          select: ['id', 'status'],
+        });
+
+        if (task?.status === 'failed') {
+          activeTask.stopRequested = true;
+          activeTask.stopReason ||= 'Task stopped by administrator';
+
+          await Promise.allSettled([
+            activeTask.crawler?.teardown() ?? Promise.resolve(),
+            this.closeDetachedDetailBrowser(),
+          ]);
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Failed to check stop state for task ${activeTask.taskId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      } finally {
+        checking = false;
+      }
+    }, 1000);
+  }
+
+  private isTaskStopRequested(taskId: number): boolean {
+    return Boolean(this.activeTasks.get(taskId)?.stopRequested);
+  }
+
+  private getTaskStopReason(taskId: number): string {
+    return (
+      this.activeTasks.get(taskId)?.stopReason ||
+      'Task stopped by administrator'
+    );
+  }
+
+  private ensureTaskNotStopped(taskId: number): void {
+    if (this.isTaskStopRequested(taskId)) {
+      throw new Error(this.getTaskStopReason(taskId));
+    }
+  }
+
+  private async finalizeStoppedTask(
+    taskId: number,
+    executionId: number,
+    config: CrawleeTaskConfig,
+    stopReason: string,
+  ): Promise<void> {
+    await this.updateExecutionStatus(executionId, 'failed', stopReason);
+    await this.taskRepository.update(taskId, {
+      status: 'failed',
+      endTime: new Date(),
+    });
+
+    const taskInfo = await this.taskRepository.findOne({
+      where: { id: taskId },
+    });
+
+    this.taskGateway.broadcastTaskUpdate({
+      taskId,
+      taskName: taskInfo?.name,
+      taskUrl: taskInfo?.url,
+      status: 'failed',
+      progress: 0,
+    });
+
+    await this.sendTaskExecutionNotification({
+      taskId,
+      executionId,
+      config,
+      status: 'failed',
+      log: stopReason,
+    });
+  }
+
+  private async sendTaskExecutionNotification(options: {
+    taskId: number;
+    executionId: number;
+    config: CrawleeTaskConfig;
+    status: 'success' | 'failed';
+    log: string;
+    itemCount?: number;
+    previewItems?: Record<string, any>[];
+  }): Promise<void> {
+    const notification = this.normalizeNotificationConfig(
+      options.config.notification,
+    );
+
+    if (!this.shouldSendNotification(notification, options.status)) {
+      return;
+    }
+
+    try {
+      const task = await this.taskRepository.findOne({
+        where: { id: options.taskId },
+        relations: ['user'],
+      });
+
+      const recipient = task?.user?.email?.trim();
+      if (!task || !recipient) {
+        return;
+      }
+
+      const emailSettings = await this.systemSettingsService.getSetting(
+        SettingKey.EMAIL,
+      );
+      const transportConfig = this.buildMailTransportConfig(emailSettings);
+      if (!transportConfig) {
+        this.logger.warn(
+          `Task ${options.taskId} notification skipped because email settings are incomplete`,
+        );
+        return;
+      }
+
+      const subject =
+        options.status === 'success'
+          ? `[Crawlee] Task succeeded: ${task.name}`
+          : `[Crawlee] Task failed: ${task.name}`;
+      const previewCount =
+        options.status === 'success' ? notification.previewCount || 0 : 0;
+      const previewItems =
+        previewCount > 0
+          ? (options.previewItems || []).slice(0, previewCount)
+          : [];
+      const payload = this.buildNotificationContent({
+        taskName: task.name,
+        taskUrl: task.url,
+        executionId: options.executionId,
+        status: options.status,
+        log: options.log,
+        itemCount: options.itemCount,
+        previewItems,
+      });
+
+      await this.mailService.sendMail(
+        recipient,
+        subject,
+        payload.text,
+        payload.html,
+        transportConfig,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Task ${options.taskId} notification failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  private normalizeNotificationConfig(
+    notification?: TaskNotificationConfig,
+  ): Required<TaskNotificationConfig> {
+    return {
+      enabled: Boolean(notification?.enabled),
+      onSuccess:
+        typeof notification?.onSuccess === 'boolean'
+          ? notification.onSuccess
+          : true,
+      onFailure:
+        typeof notification?.onFailure === 'boolean'
+          ? notification.onFailure
+          : true,
+      previewCount: Math.max(
+        0,
+        Math.min(10, Number(notification?.previewCount ?? 3) || 3),
+      ),
+    };
+  }
+
+  private shouldSendNotification(
+    notification: Required<TaskNotificationConfig>,
+    status: 'success' | 'failed',
+  ): boolean {
+    if (!notification.enabled) {
+      return false;
+    }
+
+    return status === 'success'
+      ? notification.onSuccess
+      : notification.onFailure;
+  }
+
+  private buildMailTransportConfig(
+    settings: Record<string, any> | null | undefined,
+  ): MailTransportConfig | null {
+    if (!settings?.enableEmail) {
+      return null;
+    }
+
+    const host = String(settings.smtpHost || '').trim();
+    const user = String(settings.smtpUsername || '').trim();
+    const pass = String(settings.smtpPassword || '').trim();
+    const fromEmail = String(settings.fromEmail || user).trim();
+
+    if (!host || !user || !pass || !fromEmail) {
+      return null;
+    }
+
+    return {
+      host,
+      port: Number(settings.smtpPort) || 465,
+      secure:
+        typeof settings.smtpSSL === 'boolean'
+          ? settings.smtpSSL
+          : Number(settings.smtpPort) === 465,
+      user,
+      pass,
+      fromEmail,
+      fromName: String(settings.fromName || 'Crawlee System').trim(),
+    };
+  }
+
+  private buildNotificationContent(options: {
+    taskName: string;
+    taskUrl: string;
+    executionId: number;
+    status: 'success' | 'failed';
+    log: string;
+    itemCount?: number;
+    previewItems: Record<string, any>[];
+  }): { text: string; html: string } {
+    const statusText = options.status === 'success' ? '成功' : '失败';
+    const summaryLines = [
+      `任务名称: ${options.taskName}`,
+      `任务状态: ${statusText}`,
+      `执行 ID: ${options.executionId}`,
+      `任务地址: ${options.taskUrl}`,
+    ];
+
+    if (typeof options.itemCount === 'number') {
+      summaryLines.push(`结果条数: ${options.itemCount}`);
+    }
+
+    summaryLines.push(`详情: ${options.log}`);
+
+    const previewText =
+      options.previewItems.length > 0
+        ? `\n\n结果预览:\n${options.previewItems
+            .map((item, index) => `#${index + 1}\n${this.stringifyPreviewItem(item)}`)
+            .join('\n\n')}`
+        : '';
+
+    const text = `${summaryLines.join('\n')}${previewText}`;
+    const htmlPreview =
+      options.previewItems.length > 0
+        ? `<h3>结果预览</h3>${options.previewItems
+            .map(
+              (item, index) =>
+                `<p><strong>#${index + 1}</strong></p><pre>${this.escapeHtml(
+                  this.stringifyPreviewItem(item),
+                )}</pre>`,
+            )
+            .join('')}`
+        : '';
+    const html = `
+      <div>
+        <h2>任务${this.escapeHtml(statusText)}通知</h2>
+        <p><strong>任务名称:</strong> ${this.escapeHtml(options.taskName)}</p>
+        <p><strong>任务状态:</strong> ${this.escapeHtml(statusText)}</p>
+        <p><strong>执行 ID:</strong> ${options.executionId}</p>
+        <p><strong>任务地址:</strong> <a href="${this.escapeHtml(options.taskUrl)}">${this.escapeHtml(options.taskUrl)}</a></p>
+        ${
+          typeof options.itemCount === 'number'
+            ? `<p><strong>结果条数:</strong> ${options.itemCount}</p>`
+            : ''
+        }
+        <p><strong>详情:</strong> ${this.escapeHtml(options.log)}</p>
+        ${htmlPreview}
+      </div>
+    `;
+
+    return { text, html };
+  }
+
+  private stringifyPreviewItem(item: Record<string, any>): string {
+    const text = JSON.stringify(item, null, 2) || '{}';
+    return text.length > 4000 ? `${text.slice(0, 4000)}\n...` : text;
+  }
+
+  private escapeHtml(value: string): string {
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   getQueueStatus() {
     return {
       queueLength: this.taskQueue.length,
@@ -1804,6 +2297,12 @@ export class CrawleeEngineService {
   async stop() {
     this.taskQueue = [];
     this.isProcessing = false;
+    await Promise.allSettled(
+      Array.from(this.activeTasks.values()).map((task) =>
+        task.crawler?.teardown() ?? Promise.resolve(),
+      ),
+    );
+    this.activeTasks.clear();
     if (this.crawler) {
       await this.crawler.teardown();
     }

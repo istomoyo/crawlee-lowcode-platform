@@ -1,4 +1,4 @@
-import { IsObject, IsOptional, ValidateNested } from 'class-validator';
+import { IsIn, IsObject, IsOptional, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 
 class StructureConfig {
@@ -30,6 +30,26 @@ class DownloadConfig {
 
   @IsOptional()
   timeout?: number;
+
+  @IsOptional()
+  @IsIn(['direct', 'browser', 'auto'])
+  strategy?: 'direct' | 'browser' | 'auto';
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => BrowserFlowConfig)
+  browserFlow?: BrowserFlowConfig;
+}
+
+class BrowserFlowConfig {
+  @IsOptional()
+  detailPageField?: string;
+
+  @IsOptional()
+  detailPageWaitSelector?: string;
+
+  @IsOptional()
+  detailPageWaitTimeout?: number;
 }
 
 class FieldMappingConfig {

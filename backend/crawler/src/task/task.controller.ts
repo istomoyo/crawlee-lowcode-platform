@@ -23,7 +23,7 @@ class JsPathParseDto {
   url: string;
   jsPath: string;
   waitSelector?: string;
-  contentFormat?: 'text' | 'html' | 'markdown' = 'text';
+  contentFormat?: 'text' | 'html' | 'markdown' | 'smart' = 'text';
 }
 
 

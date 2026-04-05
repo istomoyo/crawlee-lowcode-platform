@@ -3,7 +3,7 @@
     <div class="flex justify-between items-center mb-6">
       <h1 class="text-2xl font-bold text-gray-900">系统日志</h1>
       <div class="flex gap-4">
-        <el-button type="primary" @click="exportLogs">
+        <el-button type="primary" @click="exportLogs" :loading="exporting">
           <el-icon><Download /></el-icon>
           导出日志
         </el-button>
@@ -14,22 +14,29 @@
       </div>
     </div>
 
-    <!-- 筛选器 -->
     <div class="mb-4 flex gap-4 flex-wrap">
-      <el-select v-model="levelFilter" placeholder="日志级别" clearable style="width: 120px">
+      <el-select
+        v-model="levelFilter"
+        placeholder="日志级别"
+        clearable
+        style="width: 140px"
+        @change="handleFiltersChange"
+      >
         <el-option label="全部" value="" />
         <el-option label="ERROR" value="error" />
         <el-option label="WARN" value="warn" />
         <el-option label="INFO" value="info" />
         <el-option label="DEBUG" value="debug" />
       </el-select>
+
       <el-input
         v-model="searchQuery"
-        placeholder="搜索日志内容"
+        placeholder="搜索模块、用户或消息内容"
         clearable
-        style="width: 250px"
-        @input="handleSearch"
+        style="width: 280px"
+        @input="handleFiltersChange"
       />
+
       <el-date-picker
         v-model="dateRange"
         type="datetimerange"
@@ -38,20 +45,20 @@
         end-placeholder="结束时间"
         format="YYYY-MM-DD HH:mm"
         value-format="YYYY-MM-DD HH:mm"
-        @change="handleDateChange"
+        @change="handleFiltersChange"
       />
+
       <el-button type="success" @click="refreshLogs">
         <el-icon><Refresh /></el-icon>
         刷新
       </el-button>
     </div>
 
-    <!-- 日志统计 -->
     <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
       <div class="bg-white p-4 rounded-lg shadow-sm border">
         <div class="flex items-center justify-between">
           <div>
-            <p class="text-sm text-gray-600">总日志数</p>
+            <p class="text-sm text-gray-600">日志总数</p>
             <p class="text-2xl font-bold text-gray-900">{{ stats.total }}</p>
           </div>
           <el-icon size="32" class="text-gray-500">
@@ -97,7 +104,6 @@
       </div>
     </div>
 
-    <!-- 日志列表 -->
     <el-table
       :data="logList"
       border
@@ -112,6 +118,7 @@
           {{ formatDate(row.timestamp) }}
         </template>
       </el-table-column>
+
       <el-table-column label="级别" width="100">
         <template #default="{ row }">
           <el-tag :type="getLevelType(row.level)" size="small">
@@ -119,28 +126,33 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="模块" width="120">
+
+      <el-table-column label="模块" width="140">
         <template #default="{ row }">
           <el-tag size="small" type="info">{{ row.module }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="用户" width="120">
+
+      <el-table-column label="用户" width="140">
         <template #default="{ row }">
-          {{ row.user || '系统' }}
+          {{ row.user || "系统" }}
         </template>
       </el-table-column>
-      <el-table-column label="消息" min-width="300" show-overflow-tooltip>
+
+      <el-table-column label="消息" min-width="320" show-overflow-tooltip>
         <template #default="{ row }">
           <span :class="getMessageClass(row.level)">{{ row.message }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="详情" width="80">
+
+      <el-table-column label="详情" width="90">
         <template #default="{ row }">
           <el-button
-            size="small"
-            type="text"
-            @click="viewLogDetails(row)"
             v-if="row.details"
+            size="small"
+            type="primary"
+            text
+            @click="viewLogDetails(row)"
           >
             查看
           </el-button>
@@ -148,7 +160,6 @@
       </el-table-column>
     </el-table>
 
-    <!-- 分页 -->
     <div class="mt-4 flex justify-end">
       <el-pagination
         background
@@ -162,8 +173,7 @@
       />
     </div>
 
-    <!-- 日志详情对话框 -->
-    <el-dialog v-model="logDetailVisible" title="日志详情" width="600px">
+    <el-dialog v-model="logDetailVisible" title="日志详情" width="680px">
       <div v-if="selectedLog" class="space-y-4">
         <div class="grid grid-cols-2 gap-4">
           <div>
@@ -182,7 +192,7 @@
           </div>
           <div>
             <label class="block text-sm font-medium text-gray-700">用户</label>
-            <p class="mt-1 text-sm text-gray-900">{{ selectedLog.user || '系统' }}</p>
+            <p class="mt-1 text-sm text-gray-900">{{ selectedLog.user || "系统" }}</p>
           </div>
         </div>
 
@@ -193,7 +203,7 @@
 
         <div v-if="selectedLog.details">
           <label class="block text-sm font-medium text-gray-700">详细信息</label>
-          <pre class="mt-1 p-3 bg-gray-100 rounded text-sm overflow-auto max-h-60">{{ JSON.stringify(selectedLog.details, null, 2) }}</pre>
+          <pre class="mt-1 p-3 bg-gray-100 rounded text-sm overflow-auto max-h-72">{{ JSON.stringify(selectedLog.details, null, 2) }}</pre>
         </div>
       </div>
     </el-dialog>
@@ -201,225 +211,227 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh, Download, Delete, Document, Warning, InfoFilled } from '@element-plus/icons-vue'
-import { getLogsApi, clearLogsApi, type LogListResponse } from '@/api/admin'
+import { onMounted, reactive, ref } from "vue";
+import { ElMessage, ElMessageBox } from "element-plus";
+import {
+  Refresh,
+  Download,
+  Delete,
+  Document,
+  Warning,
+  InfoFilled,
+} from "@element-plus/icons-vue";
+import {
+  clearLogsApi,
+  getLogsApi,
+  type GetLogsParams,
+  type LogEntry,
+  type LogStats,
+} from "@/api/admin";
 
-// 日志接口
-interface LogEntry {
-  id: number
-  timestamp: string
-  level: 'error' | 'warn' | 'info' | 'debug'
-  module: string
-  user?: string
-  message: string
-  details?: any
-}
+const logList = ref<LogEntry[]>([]);
+const loading = ref(false);
+const exporting = ref(false);
+const searchQuery = ref("");
+const levelFilter = ref("");
+const dateRange = ref<string[]>([]);
+const logDetailVisible = ref(false);
+const selectedLog = ref<LogEntry | null>(null);
 
-// 统计接口
-interface LogStats {
-  total: number
-  error: number
-  warn: number
-  info: number
-  debug: number
-}
-
-// 响应式数据
-const logList = ref<LogEntry[]>([])
-const loading = ref(false)
-const searchQuery = ref('')
-const levelFilter = ref('')
-const dateRange = ref<string[]>([])
-
-// 统计数据
 const stats = reactive<LogStats>({
   total: 0,
   error: 0,
   warn: 0,
   info: 0,
   debug: 0,
-})
+});
 
-// 分页
 const pagination = reactive({
   page: 1,
   limit: 50,
   total: 0,
-})
+});
 
-// 日志详情
-const logDetailVisible = ref(false)
-const selectedLog = ref<LogEntry | null>(null)
+function buildParams(overrides?: Partial<GetLogsParams>): GetLogsParams {
+  return {
+    level: (levelFilter.value as GetLogsParams["level"]) || undefined,
+    module: searchQuery.value || undefined,
+    search: searchQuery.value || undefined,
+    startDate: dateRange.value?.[0] || undefined,
+    endDate: dateRange.value?.[1] || undefined,
+    page: pagination.page,
+    limit: pagination.limit,
+    ...overrides,
+  };
+}
 
-// 获取日志列表
-const fetchLogs = async () => {
+async function fetchLogs(overrides?: Partial<GetLogsParams>) {
   try {
-    loading.value = true
-    const params = {
-      level: levelFilter.value as any || undefined,
-      module: searchQuery.value || undefined,
-      search: searchQuery.value || undefined,
-      startDate: dateRange.value?.[0] || undefined,
-      endDate: dateRange.value?.[1] || undefined,
-      page: pagination.page,
-      limit: pagination.limit,
-    }
-    const response: LogListResponse = await getLogsApi(params)
-    logList.value = response.items
-    Object.assign(stats, response.stats)
-    pagination.total = response.total
-    pagination.page = response.page
-    pagination.limit = response.limit
+    loading.value = true;
+    const response = await getLogsApi(buildParams(overrides));
+    logList.value = response.items;
+    Object.assign(stats, response.stats);
+    pagination.total = response.total;
+    pagination.page = response.page;
+    pagination.limit = response.limit;
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : '获取日志失败'
-    ElMessage.error(errorMessage)
-    logList.value = []
-    pagination.total = 0
+    const errorMessage = error instanceof Error ? error.message : "获取日志失败";
+    ElMessage.error(errorMessage);
+    logList.value = [];
+    pagination.total = 0;
   } finally {
-    loading.value = false
+    loading.value = false;
   }
 }
 
-// 更新统计数据
-const updateStats = () => {
-  stats.total = logList.value.length
-  stats.error = logList.value.filter(l => l.level === 'error').length
-  stats.warn = logList.value.filter(l => l.level === 'warn').length
-  stats.info = logList.value.filter(l => l.level === 'info').length
-  stats.debug = logList.value.filter(l => l.level === 'debug').length
+function handleFiltersChange() {
+  pagination.page = 1;
+  fetchLogs();
 }
 
-// 刷新日志
-const refreshLogs = () => {
-  fetchLogs()
+function refreshLogs() {
+  fetchLogs();
 }
 
-// 搜索处理
-const handleSearch = () => {
-  pagination.page = 1
-  fetchLogs()
+function handlePageChange(page: number) {
+  pagination.page = page;
+  fetchLogs();
 }
 
-// 日期筛选处理
-const handleDateChange = () => {
-  pagination.page = 1
-  fetchLogs()
+function handleSizeChange(size: number) {
+  pagination.limit = size;
+  pagination.page = 1;
+  fetchLogs();
 }
 
-// 分页处理
-const handlePageChange = (page: number) => {
-  pagination.page = page
-  fetchLogs()
-}
-
-const handleSizeChange = (size: number) => {
-  pagination.limit = size
-  pagination.page = 1
-  fetchLogs()
-}
-
-// 获取级别类型
-const getLevelType = (level: string) => {
+function getLevelType(level: string) {
   switch (level) {
-    case 'error':
-      return 'danger'
-    case 'warn':
-      return 'warning'
-    case 'info':
-      return 'primary'
-    case 'debug':
-      return 'info'
+    case "error":
+      return "danger";
+    case "warn":
+      return "warning";
+    case "info":
+      return "primary";
+    case "debug":
+      return "info";
     default:
-      return ''
+      return "";
   }
 }
 
-// 获取消息样式
-const getMessageClass = (level: string) => {
+function getMessageClass(level: string) {
   switch (level) {
-    case 'error':
-      return 'text-red-600 font-medium'
-    case 'warn':
-      return 'text-yellow-600'
+    case "error":
+      return "text-red-600 font-medium";
+    case "warn":
+      return "text-yellow-600";
     default:
-      return 'text-gray-900'
+      return "text-gray-900";
   }
 }
 
-// 格式化日期
-const formatDate = (dateStr: string) => {
+function formatDate(dateStr: string) {
   try {
-    const date = new Date(dateStr)
-    return date.toLocaleString('zh-CN', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    })
+    const date = new Date(dateStr);
+    return date.toLocaleString("zh-CN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
   } catch {
-    return dateStr
+    return dateStr;
   }
 }
 
-// 查看日志详情
-const viewLogDetails = (log: LogEntry) => {
-  selectedLog.value = log
-  logDetailVisible.value = true
+function viewLogDetails(log: LogEntry) {
+  selectedLog.value = log;
+  logDetailVisible.value = true;
 }
 
-// 导出日志
-const exportLogs = () => {
-  try {
-    const csvContent = logList.value.map(log => ({
-      时间: formatDate(log.timestamp),
-      级别: log.level.toUpperCase(),
-      模块: log.module,
-      用户: log.user || '系统',
-      消息: log.message,
-    }))
+function csvCell(value: unknown) {
+  const text =
+    value === null || value === undefined
+      ? ""
+      : typeof value === "string"
+        ? value
+        : JSON.stringify(value);
+  return `"${text.replace(/"/g, '""')}"`;
+}
 
-    // TODO: 实现CSV导出功能
-    ElMessage.success('日志导出功能开发中...')
+async function exportLogs() {
+  try {
+    exporting.value = true;
+    const response = await getLogsApi(buildParams({ page: 1, limit: 1000 }));
+    const rows = response.items.map((log) =>
+      [
+        formatDate(log.timestamp),
+        log.level.toUpperCase(),
+        log.module,
+        log.user || "系统",
+        log.message,
+        log.details ? JSON.stringify(log.details) : "",
+      ]
+        .map(csvCell)
+        .join(","),
+    );
+
+    const csv = [
+      "\uFEFF时间,级别,模块,用户,消息,详情",
+      ...rows,
+    ].join("\n");
+
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `system-logs-${Date.now()}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    ElMessage.success(`已导出 ${response.items.length} 条日志`);
   } catch (error) {
-    ElMessage.error('导出失败')
+    const errorMessage = error instanceof Error ? error.message : "导出日志失败";
+    ElMessage.error(errorMessage);
+  } finally {
+    exporting.value = false;
   }
 }
 
-// 清空日志
-const clearLogs = async () => {
+async function clearLogs() {
   try {
-    await ElMessageBox.confirm('确定要清空所有系统日志吗？此操作不可恢复。', '警告', {
-      type: 'warning',
-      confirmButtonText: '确定清空',
-      cancelButtonText: '取消',
-    })
+    await ElMessageBox.confirm(
+      "确定要清空所有系统日志吗？该操作不可恢复。",
+      "警告",
+      {
+        type: "warning",
+        confirmButtonText: "确认清空",
+        cancelButtonText: "取消",
+      },
+    );
 
-    await clearLogsApi()
-    logList.value = []
-    pagination.total = 0
-    Object.assign(stats, { total: 0, error: 0, warn: 0, info: 0, debug: 0 })
-    ElMessage.success('日志已清空')
+    await clearLogsApi();
+    logList.value = [];
+    pagination.total = 0;
+    Object.assign(stats, { total: 0, error: 0, warn: 0, info: 0, debug: 0 });
+    ElMessage.success("系统日志已清空");
   } catch (error) {
-    if (error !== 'cancel') {
-      const errorMessage = error instanceof Error ? error.message : '清空失败'
-      ElMessage.error(errorMessage)
+    if (error !== "cancel") {
+      const errorMessage = error instanceof Error ? error.message : "清空日志失败";
+      ElMessage.error(errorMessage);
     }
   }
 }
 
-// 生命周期
 onMounted(() => {
-  fetchLogs()
-})
+  fetchLogs();
+});
 </script>
 
 <style scoped>
 pre {
-  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
   font-size: 12px;
 }
 

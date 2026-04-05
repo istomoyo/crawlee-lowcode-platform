@@ -82,19 +82,191 @@ type NestedContextItem = {
 
 // 结果过滤：在爬取完成后按字段值丢弃不符合条件的记录
 export type ResultFilterOperator =
+  | "is_empty"
+  | "is_not_empty"
   | "gt"
   | "gte"
   | "lt"
   | "lte"
   | "eq"
+  | "neq"
   | "contains"
   | "not_contains";
+
+export type ResultFilterMode = "operator" | "function";
 
 export interface ResultFilterRule {
   id: number;
   field: string;
-  operator: ResultFilterOperator;
-  value: string;
+  mode?: ResultFilterMode;
+  operator?: ResultFilterOperator;
+  value?: string;
+  functionCode?: string;
+}
+
+export interface TaskNotificationConfig {
+  enabled: boolean;
+  onSuccess: boolean;
+  onFailure: boolean;
+  previewCount: number;
+}
+
+export interface CrawlerConfigState {
+  maxRequestsPerCrawl: number;
+  maxConcurrency: number;
+  requestInterval: number;
+  timeout: number;
+  maxRetries: number;
+  useCookie: boolean;
+  cookieString: string;
+  cookieDomain: string;
+  resultFilters: ResultFilterRule[];
+  notification: TaskNotificationConfig;
+  preActions: PreActionConfig[];
+}
+
+export function createDefaultCrawlerConfig(): CrawlerConfigState {
+  return {
+    maxRequestsPerCrawl: 100,
+    maxConcurrency: 5,
+    requestInterval: 1000,
+    timeout: 60,
+    maxRetries: 3,
+    useCookie: false,
+    cookieString: "",
+    cookieDomain: "",
+    resultFilters: [],
+    notification: {
+      enabled: false,
+      onSuccess: true,
+      onFailure: true,
+      previewCount: 3,
+    },
+    preActions: [],
+  };
+}
+
+function normalizeResultFilterRules(rules: unknown): ResultFilterRule[] {
+  if (!Array.isArray(rules)) {
+    return [];
+  }
+
+  return rules
+    .map((rule, index) => {
+      const current = (rule || {}) as Partial<ResultFilterRule>;
+      const field = String(current.field || "").trim();
+      const mode: ResultFilterMode =
+        current.mode === "function" || current.functionCode
+          ? "function"
+          : "operator";
+      const operator = current.operator;
+      const value = String(current.value ?? "").trim();
+      const functionCode = String(current.functionCode ?? "").trim();
+
+      if (!field) {
+        return null;
+      }
+
+      if (mode === "function") {
+        if (!functionCode) {
+          return null;
+        }
+
+        return {
+          id: Number(current.id) || index + 1,
+          field,
+          mode,
+          functionCode,
+          value,
+        } as ResultFilterRule;
+      }
+
+      if (
+        !operator ||
+        ![
+          "is_empty",
+          "is_not_empty",
+          "gt",
+          "gte",
+          "lt",
+          "lte",
+          "eq",
+          "neq",
+          "contains",
+          "not_contains",
+        ].includes(operator)
+      ) {
+        return null;
+      }
+
+      return {
+        id: Number(current.id) || index + 1,
+        field,
+        mode,
+        operator,
+        value,
+      } as ResultFilterRule;
+    })
+    .filter((rule): rule is ResultFilterRule => Boolean(rule));
+}
+
+export function normalizeCrawlerConfig(
+  input?: Partial<CrawlerConfigState> | Record<string, any>
+): CrawlerConfigState {
+  const defaults = createDefaultCrawlerConfig();
+  const raw = (input || {}) as Partial<CrawlerConfigState> & Record<string, any>;
+
+  return {
+    maxRequestsPerCrawl: Math.max(
+      1,
+      Number(raw.maxRequestsPerCrawl ?? defaults.maxRequestsPerCrawl) ||
+        defaults.maxRequestsPerCrawl
+    ),
+    maxConcurrency: Math.max(
+      1,
+      Number(raw.maxConcurrency ?? defaults.maxConcurrency) ||
+        defaults.maxConcurrency
+    ),
+    requestInterval: Math.max(
+      0,
+      Number(raw.requestInterval ?? defaults.requestInterval) ||
+        defaults.requestInterval
+    ),
+    timeout: Math.max(
+      10,
+      Number(raw.timeout ?? defaults.timeout) || defaults.timeout
+    ),
+    maxRetries: Math.max(
+      0,
+      Number(raw.maxRetries ?? defaults.maxRetries) || defaults.maxRetries
+    ),
+    useCookie: Boolean(raw.useCookie),
+    cookieString: String(raw.cookieString ?? defaults.cookieString).trim(),
+    cookieDomain: String(raw.cookieDomain ?? defaults.cookieDomain).trim(),
+    resultFilters: normalizeResultFilterRules(raw.resultFilters),
+    notification: {
+      enabled: Boolean(raw.notification?.enabled),
+      onSuccess:
+        typeof raw.notification?.onSuccess === "boolean"
+          ? raw.notification.onSuccess
+          : true,
+      onFailure:
+        typeof raw.notification?.onFailure === "boolean"
+          ? raw.notification.onFailure
+          : true,
+      previewCount: Math.max(
+        0,
+        Math.min(
+          10,
+          Number(raw.notification?.previewCount ?? defaults.notification.previewCount) ||
+            defaults.notification.previewCount
+        )
+      ),
+    },
+    preActions: Array.isArray(raw.preActions)
+      ? [...raw.preActions]
+      : defaults.preActions,
+  };
 }
 
 export const useTaskFormStore = defineStore("taskForm", () => {
@@ -123,7 +295,10 @@ export const useTaskFormStore = defineStore("taskForm", () => {
   } | null>(null);
 
   // 爬虫配置
-  const crawlerConfig = reactive({
+  const crawlerConfig = reactive(createDefaultCrawlerConfig());
+
+  /*
+  const legacyCrawlerConfig = reactive({
     // 基本设置
     maxRequestsPerCrawl: 100,
     maxConcurrency: 5,
@@ -137,9 +312,6 @@ export const useTaskFormStore = defineStore("taskForm", () => {
     cookieDomain: "",
 
     // 代理设置
-    useProxy: false,
-    proxyUrl: "",
-    proxyAuth: "",
 
     // 数据处理
     removeDuplicates: true,
@@ -173,6 +345,7 @@ export const useTaskFormStore = defineStore("taskForm", () => {
     // Step3 field-mapping pre actions (e.g. click-to-load then wait)
     preActions: [] as PreActionConfig[],
   });
+  */
 
   function buildConfig() {
     // 获取基础XPath
@@ -184,34 +357,29 @@ export const useTaskFormStore = defineStore("taskForm", () => {
     // 处理分页和滚动配置
     const paginationConfig = getPaginationConfig(treeData);
 
+    const normalizedCrawlerConfig = normalizeCrawlerConfig(crawlerConfig as any);
+
     const config: any = {
       crawlerType: 'playwright',
       urls: [form.url],
-      maxRequestsPerCrawl: crawlerConfig.maxRequestsPerCrawl || 1,
-      maxConcurrency: crawlerConfig.maxConcurrency,
-      headless: crawlerConfig.headless,
-      viewport: { width: 1920, height: 1080 },
-      waitForTimeout: crawlerConfig.timeout * 1000,
-      navigationTimeout: crawlerConfig.timeout * 1000,
-      userAgent: crawlerConfig.userAgent || undefined,
-      proxyUrl: crawlerConfig.useProxy ? crawlerConfig.proxyUrl : undefined,
-      requestInterval: crawlerConfig.requestInterval,
-      maxRetries: crawlerConfig.maxRetries,
-      useCookie: crawlerConfig.useCookie,
-      cookieString: crawlerConfig.cookieString,
-      cookieDomain: crawlerConfig.cookieDomain,
-      proxyAuth: crawlerConfig.proxyAuth,
-      removeDuplicates: crawlerConfig.removeDuplicates,
-      enableValidation: crawlerConfig.enableValidation,
-      filenameTemplate: crawlerConfig.filenameTemplate,
-      disableImages: crawlerConfig.disableImages,
-      disableStyles: crawlerConfig.disableStyles,
-      customHeaders: crawlerConfig.customHeaders,
-      resultFilters: crawlerConfig.resultFilters,
-      customItemProcessorCode: crawlerConfig.customItemProcessorCode,
-      customFilterCode: crawlerConfig.customFilterCode,
-      interaction: crawlerConfig.interaction,
-      preActions: crawlerConfig.preActions,
+      maxRequestsPerCrawl: normalizedCrawlerConfig.maxRequestsPerCrawl || 1,
+      maxConcurrency: normalizedCrawlerConfig.maxConcurrency,
+      waitForTimeout: normalizedCrawlerConfig.timeout * 1000,
+      navigationTimeout: normalizedCrawlerConfig.timeout * 1000,
+      requestInterval: normalizedCrawlerConfig.requestInterval,
+      maxRetries: normalizedCrawlerConfig.maxRetries,
+      useCookie: normalizedCrawlerConfig.useCookie,
+      cookieString: normalizedCrawlerConfig.useCookie
+        ? normalizedCrawlerConfig.cookieString
+        : undefined,
+      cookieDomain: normalizedCrawlerConfig.useCookie
+        ? normalizedCrawlerConfig.cookieDomain || undefined
+        : undefined,
+      resultFilters: normalizedCrawlerConfig.resultFilters,
+      notification: normalizedCrawlerConfig.notification.enabled
+        ? normalizedCrawlerConfig.notification
+        : undefined,
+      preActions: normalizedCrawlerConfig.preActions,
       ...paginationConfig,
       selectors,
     };
@@ -352,6 +520,7 @@ export const useTaskFormStore = defineStore("taskForm", () => {
     selectedItem.value = null;
     treeData.length = 0;
     siteType.value = null;
+    Object.assign(crawlerConfig, createDefaultCrawlerConfig());
   }
 
   return {

@@ -48,8 +48,6 @@ export class SystemSetting {
         maxRequestsPerCrawl: 100,
         requestTimeout: 30,
         waitForTimeout: 30000,
-        enableProxy: false,
-        proxyUrl: '',
       },
       [SettingKey.STORAGE]: {
         datasetRetentionDays: 30,

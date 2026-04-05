@@ -187,7 +187,7 @@ const menu = computed<MenuItem[]>(() => {
         {
           label: "系统日志",
           path: "/admin/logs",
-          class: "icon-[mingcute--file-text-fill]",
+          class: "icon-[mingcute--document-2-fill]",
         },
         {
           label: "系统设置",

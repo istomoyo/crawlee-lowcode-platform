@@ -198,8 +198,6 @@ export interface SystemSettings {
     maxRequestsPerCrawl: number;
     requestTimeout: number;
     waitForTimeout: number;
-    enableProxy: boolean;
-    proxyUrl: string;
   };
   storage: {
     datasetRetentionDays: number;

@@ -1,26 +1,56 @@
-// src/mail/mail.service.ts
 import { Injectable } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
 
+export interface MailTransportConfig {
+  host?: string;
+  port?: number;
+  secure?: boolean;
+  user?: string;
+  pass?: string;
+  fromEmail?: string;
+  fromName?: string;
+}
+
 @Injectable()
 export class MailService {
-  private transporter;
+  private createTransport(config?: MailTransportConfig) {
+    const host = config?.host ?? process.env.SMTP_HOST;
+    const port = Number(config?.port ?? process.env.SMTP_PORT) || 465;
+    const secure =
+      typeof config?.secure === 'boolean' ? config.secure : port === 465;
+    const user = config?.user ?? process.env.SMTP_USER;
+    const pass = config?.pass ?? process.env.SMTP_PASS;
 
-  constructor() {
-    this.transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST, // QQ邮箱 smtp.qq.com
-      port: Number(process.env.SMTP_PORT) || 465,
-      secure: true, // 465 为 true, 587 为 false
-      auth: {
-        user: process.env.SMTP_USER, // QQ邮箱
-        pass: process.env.SMTP_PASS, // SMTP 授权码
-      },
+    return nodemailer.createTransport({
+      host,
+      port,
+      secure,
+      auth:
+        user || pass
+          ? {
+              user,
+              pass,
+            }
+          : undefined,
     });
   }
 
-  async sendMail(to: string, subject: string, text: string, html?: string) {
-    return this.transporter.sendMail({
-      from: `"No Reply" <${process.env.SMTP_USER}>`,
+  async sendMail(
+    to: string,
+    subject: string,
+    text: string,
+    html?: string,
+    transportConfig?: MailTransportConfig,
+  ) {
+    const transporter = this.createTransport(transportConfig);
+    const fromEmail =
+      transportConfig?.fromEmail ||
+      transportConfig?.user ||
+      process.env.SMTP_USER;
+    const fromName = transportConfig?.fromName || 'No Reply';
+
+    return transporter.sendMail({
+      from: `"${fromName}" <${fromEmail}>`,
       to,
       subject,
       text,

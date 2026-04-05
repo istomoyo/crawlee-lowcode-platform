@@ -140,18 +140,32 @@ export interface PreActionConfig {
 
 // 结果过滤：在爬取完成后按字段值丢弃不符合条件的记录
 export type ResultFilterOperator =
+  | "is_empty"
+  | "is_not_empty"
   | "gt"
   | "gte"
   | "lt"
   | "lte"
   | "eq"
+  | "neq"
   | "contains"
   | "not_contains";
 
+export type ResultFilterMode = "operator" | "function";
+
 export interface ResultFilterRule {
   field: string;
-  operator: ResultFilterOperator;
-  value: string;
+  mode?: ResultFilterMode;
+  operator?: ResultFilterOperator;
+  value?: string;
+  functionCode?: string;
+}
+
+export interface TaskNotificationConfig {
+  enabled?: boolean;
+  onSuccess?: boolean;
+  onFailure?: boolean;
+  previewCount?: number;
 }
 
 export interface CrawleeTaskConfig {
@@ -173,6 +187,9 @@ export interface CrawleeTaskConfig {
   navigationTimeout?: number;
   requestInterval?: number;
   maxRetries?: number;
+  useCookie?: boolean;
+  cookieString?: string;
+  cookieDomain?: string;
   scrollEnabled?: boolean;
   scrollDistance?: number;
   scrollDelay?: number;
@@ -185,22 +202,19 @@ export interface CrawleeTaskConfig {
   /** 嵌套提取：详情页内列表（如评论）支持独立分页/滚动，最多 3 层 */
   nestedContexts?: NestedExtractContext[];
   userAgent?: string;
-  proxyUrl?: string;
   datasetId?: string;
   keyValueStoreId?: string;
   // 页面交互配置（可选）
-  interaction?: PageInteractionConfig;
   // 提取前动作（可选）
   preActions?: PreActionConfig[];
   // 结果过滤规则（可选）
   resultFilters?: ResultFilterRule[];
+  notification?: TaskNotificationConfig;
   // 自定义 JS 处理代码（可选），对每条记录执行
   // 代码将作为函数体执行，入参为 item，必须 return：
   // - 返回对象：作为新的 item
   // - 返回 null/undefined/false：丢弃该条数据
-  customItemProcessorCode?: string;
   // 结果筛选：自定义布尔函数（可选），入参 item，true 保留 false 丢弃
-  customFilterCode?: string;
 }
 
 export interface NestedExtractContext {
@@ -382,6 +396,12 @@ export interface PackageResultReq {
       texts?: boolean;
       maxFileSize?: number;
       timeout?: number;
+      strategy?: "direct" | "browser" | "auto";
+      browserFlow?: {
+        detailPageField?: string;
+        detailPageWaitSelector?: string;
+        detailPageWaitTimeout?: number;
+      };
     };
     fieldMapping?: {
       imageFields?: string[];

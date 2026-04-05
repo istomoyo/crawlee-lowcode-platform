@@ -1,928 +1,331 @@
-# Crawlee 低代码爬虫平台 - 项目文档（学习练习自用）
-
-## 📋 目录
-
-- [项目概述](#项目概述)
-- [技术栈](#技术栈)
-- [项目功能](#项目功能)
-- [目前已优化](#目前已优化)
-- [待优化项](#待优化项)
-- [使用方法](#使用方法)
-- [API 接口](#api-接口)
-- [项目结构](#项目结构)
-
----
-
-## 📖 项目概述
-
-**Crawlee 低代码爬虫平台** 是一个基于 Crawlee 框架的可视化爬虫管理平台，支持通过低代码方式创建和管理爬虫任务。平台提供了完整的任务管理、执行监控、数据导出等功能。
-
-### 核心特性
-
-- 🎯 **低代码爬虫创建** - 可视化配置，无需编写代码
-- 🚀 **基于 Crawlee** - 强大的爬虫引擎，支持 Playwright、Cheerio、Puppeteer
-- 📊 **实时监控** - WebSocket 实时更新任务状态
-- 📦 **数据导出** - 支持 JSON、ZIP 等多种格式
-- 👥 **用户权限** - 支持管理员和普通用户角色
-- 📈 **统计分析** - 任务执行统计和趋势分析
-
----
-
-## 🛠 技术栈
-
-### 前端技术
-
-- **框架**: Vue 3 + TypeScript
-- **构建工具**: Vite
-- **UI 组件库**: Element Plus
-- **样式**: TailwindCSS
-- **状态管理**: Pinia
-- **路由**: Vue Router
-- **HTTP 客户端**: Axios
-- **图表**: ECharts
-- **流程图**: Vue Flow (@vue-flow/core)
-- **WebSocket**: Socket.IO Client
-
-### 后端技术
-
-- **框架**: NestJS + TypeScript
-- **ORM**: TypeORM
-- **数据库**: MySQL
-- **缓存**: Redis (ioredis)
-- **爬虫引擎**: Crawlee (Playwright)
-- **认证**: JWT + Passport
-- **文件上传**: Multer
-- **WebSocket**: Socket.IO
-- **API 文档**: Swagger
-- **健康检查**: @nestjs/terminus
-- **速率限制**: @nestjs/throttler
-
----
-
-## 🎯 项目功能
-
-### 1. 用户管理模块
-
-#### 功能列表
-- ✅ 用户注册（邮箱验证码）
-- ✅ 用户登录（JWT 认证）
-- ✅ 单设备登录（Redis 管理）
-- ✅ 用户信息管理
-- ✅ 密码修改
-- ✅ 头像上传
-- ✅ 角色权限（管理员/普通用户）
-
-#### 权限控制
-- **普通用户**: 只能管理自己的任务
-- **管理员**: 可以管理所有用户和任务，查看系统日志和设置
-
-### 2. 任务管理模块
-
-#### 任务创建流程
-1. **基本信息** - 设置任务名称和 URL
-2. **结构识别** - 自动识别列表结构或手动选择
-3. **字段映射** - 配置要提取的数据字段
-   - 支持 XPath 和 JSPath 选择器
-   - 支持文本、链接、图片类型
-   - 支持 HTML、Markdown 格式转换
-   - 支持嵌套字段和分页
-4. **高级配置** - 浏览器设置、并发数、超时等
-5. **预览测试** - 预览爬取结果
-
-#### 任务执行
-- ✅ 手动执行任务
-- ✅ 快速执行（创建新任务副本）
-- ✅ 任务队列管理
-- ✅ 实时状态更新（WebSocket）
-- ✅ 执行进度显示
-- ✅ 执行日志查看
-
-#### 任务管理
-- ✅ 任务列表（分页、搜索）
-- ✅ 任务编辑
-- ✅ 任务删除
-- ✅ 任务复制
-- ✅ 执行历史查看
-
-### 3. 数据提取功能
-
-#### 支持的选择器类型
-- **XPath** - 支持绝对路径和相对路径
-- **JSPath** - JavaScript 路径表达式
-- **CSS 选择器** - 标准 CSS 选择器
-
-#### 支持的数据类型
-- **文本** - 纯文本、HTML、Markdown
-- **链接** - 提取 href 属性，自动转换为绝对 URL
-- **图片** - 提取 src、data-src、data-original 属性
-
-#### 高级功能
-- ✅ 分页支持（自动翻页）
-- ✅ 滚动加载（无限滚动）
-- ✅ 子页面导航（通过链接跳转到详情页）
-- ✅ 相对路径自动转换
-- ✅ 懒加载图片支持
-
-### 4. 结果管理模块
-
-#### 结果查看
-- ✅ 执行结果列表
-- ✅ 结果详情查看
-- ✅ 结果数据预览
-- ✅ 结果文件下载
-
-#### 结果导出
-- ✅ JSON 格式导出
-- ✅ ZIP 打包导出（包含图片、文件）
-- ✅ 自定义打包配置
-- ✅ 批量导出
-
-### 5. 统计分析模块
-
-#### 统计指标
-- ✅ 任务总数、成功数、失败数
-- ✅ 成功率统计
-- ✅ 趋势分析（按日期）
-- ✅ 数据分布统计
-- ✅ 执行时间分布
-- ✅ 任务类型分布
-- ✅ 最近执行记录
-
-### 6. 管理员功能
-
-#### 用户管理
-- ✅ 用户列表查看
-- ✅ 用户信息编辑
-- ✅ 用户删除
-- ✅ 用户搜索
-
-#### 任务监控
-- ✅ 所有任务查看
-- ✅ 任务执行监控
-- ✅ 系统资源监控
-
-#### 系统日志
-- ✅ 系统日志查看
-- ✅ 日志筛选（按级别、模块、时间）
-- ✅ 日志统计
-
-#### 系统设置
-- ✅ 系统参数配置
-- ✅ 默认设置初始化
-
-### 7. 系统功能
-
-#### 健康检查
-- ✅ 数据库连接检查
-- ✅ Redis 连接检查
-- ✅ 内存使用检查
-- ✅ 就绪检查（/health/ready）
-- ✅ 存活检查（/health/live）
-
-#### API 文档
-- ✅ Swagger UI 文档
-- ✅ 在线接口测试
-- ✅ Bearer Token 和 Cookie 认证支持
-
----
-
-## ✅ 目前已优化
-
-### 🔴 高优先级 - 安全性优化
-
-#### 1. 环境变量配置 ✅
-- ✅ 使用 `@nestjs/config` 统一管理配置
-- ✅ 移除硬编码的数据库和 Redis 配置
-- ✅ 支持多环境配置（开发/生产）
-- ✅ 创建环境变量配置说明文档
-
-**配置文件**: `backend/crawler/src/config/configuration.ts`
-
-#### 2. CORS 配置优化 ✅
-- ✅ 从允许所有来源改为配置化的域名列表
-- ✅ 支持生产环境安全配置
-- ✅ 配置允许的 HTTP 方法和请求头
-
-**配置位置**: `backend/crawler/src/main.ts`
-
-#### 3. API 速率限制 ✅
-- ✅ 全局速率限制：100 次/60 秒
-- ✅ 登录接口：5 次/15 分钟（防止暴力破解）
-- ✅ 注册接口：3 次/10 分钟
-- ✅ 验证码接口：5 次/分钟
-
-**实现**: `@nestjs/throttler` 模块
-
-#### 4. 敏感信息清理 ✅
-- ✅ 移除 JWT secret 等敏感信息的日志输出
-- ✅ 清理所有调试日志
-- ✅ 使用 NestJS Logger 替代 console.log
-
-### 🟡 中优先级 - 代码质量优化
-
-#### 5. 日志系统优化 ✅
-- ✅ 替换所有 `console.log` 为 NestJS Logger（约 50+ 处）
-- ✅ 统一日志格式和级别
-- ✅ 保留浏览器端 console（合理使用）
-
-**优化的文件**:
-- `src/main.ts`
-- `src/auth/jwt-auth.guard.ts`
-- `src/task/task.controller.ts`
-- `src/task/task.service.ts`
-- `src/task/crawlee-engine.service.ts`
-- `src/admin/admin.module.ts`
-- `src/admin/system-settings.service.ts`
-- `src/admin/logger.service.ts`
-
-#### 6. API 文档 ✅
-- ✅ 集成 Swagger/OpenAPI
-- ✅ 自动生成 API 文档
-- ✅ 支持在线测试接口
-- ✅ 访问地址：`http://localhost:3000/api`
-
-#### 7. 健康检查接口 ✅
-- ✅ 数据库健康检查
-- ✅ Redis 健康检查
-- ✅ 内存健康检查
-- ✅ 就绪检查和存活检查
-
-**接口**:
-- `GET /health` - 完整健康检查
-- `GET /health/ready` - 就绪检查
-- `GET /health/live` - 存活检查
-
-### 🗑️ 文件清理 ✅
-- ✅ 删除 Docker 相关示例文件
-- ✅ 删除配置示例文件
-- ✅ 清理多余文件
-
----
-
-## 📝 待优化项
-
-### 🔴 高优先级
-
-#### 1. 输入验证增强
-- ⏳ 完善所有 DTO 的验证规则
-- ⏳ XSS 防护
-- ⏳ SQL 注入防护（TypeORM 已处理，需确认）
-
-#### 2. 错误处理增强
-- ⏳ 更详细的错误上下文
-- ⏳ 区分业务错误和系统错误
-- ⏳ 错误上报机制（如 Sentry）
-
-### 🟡 中优先级
-
-#### 3. 测试覆盖率
-- ⏳ 提高单元测试覆盖率（目标 >80%）
-- ⏳ 完善 E2E 测试
-- ⏳ 配置测试数据库
-
-#### 4. 日志轮转和归档
-- ⏳ 配置日志轮转
-- ⏳ 日志聚合（如 ELK Stack）
-- ⏳ 日志级别动态调整
-
-### 🟢 功能增强
-
-#### 5. 任务调度系统 ⭐⭐⭐
-- ⏳ 集成 `@nestjs/schedule` 或 Bull Queue
-- ⏳ 支持 Cron 表达式
-- ⏳ 任务调度管理界面
-- ⏳ 支持任务依赖和链式执行
-
-#### 6. 数据导出功能增强 ⭐⭐⭐
-- ⏳ 支持 CSV、Excel、XML 格式
-- ⏳ 批量导出
-- ⏳ 导出任务队列管理
-- ⏳ 导出历史记录
-
-#### 7. 任务模板系统 ⭐⭐
-- ⏳ 创建任务模板
-- ⏳ 模板市场/分享
-- ⏳ 模板导入/导出
-- ⏳ 常用模板推荐
-
-#### 8. 监控和告警 ⭐⭐⭐
-- ⏳ 任务执行监控仪表板
-- ⏳ 系统资源监控（CPU、内存、磁盘）
-- ⏳ 异常告警（邮件/Webhook）
-- ⏳ 性能指标收集
-
-#### 9. 数据备份和恢复 ⭐⭐
-- ⏳ 定期数据库备份
-- ⏳ 任务配置备份
-- ⏳ 一键恢复功能
-- ⏳ 备份文件管理
-
-#### 10. 用户配额和限制管理 ⭐⭐
-- ⏳ 用户任务数量限制
-- ⏳ 每日执行次数限制
-- ⏳ 数据存储配额
-- ⏳ 管理员可调整配额
-
-#### 11. 任务协作功能 ⭐
-- ⏳ 任务分享（只读/编辑权限）
-- ⏳ 任务评论和标注
-- ⏳ 执行历史查看权限控制
-- ⏳ 团队/组织管理
-
-### 🔵 性能优化
-
-#### 12. 数据库优化
-- ⏳ 添加索引（检查常用查询字段）
-- ⏳ 查询优化（避免 N+1 问题）
-- ⏳ 连接池配置优化
-- ⏳ 慢查询日志
-
-#### 13. 缓存策略
-- ⏳ API 响应缓存
-- ⏳ 任务配置缓存
-- ⏳ 用户会话缓存优化
-- ⏳ 热点数据缓存
-
-#### 14. 文件上传优化
-- ⏳ 添加文件大小限制（部分已实现）
-- ⏳ 文件类型验证（部分已实现）
-- ⏳ 文件存储路径优化
-- ⏳ 大文件分片上传
-
-#### 15. 前端性能优化
-- ⏳ 组件按需加载
-- ⏳ 图片懒加载
-- ⏳ API 请求防抖/节流
-- ⏳ 虚拟滚动（大数据列表）
-
----
-
-## 🚀 使用方法
-
-### 环境准备
-
-#### 1. 安装依赖
-
-**后端**:
+# Crawlee Low-Code Platform
+
+这是一个基于 `NestJS + TypeORM + MySQL + Redis + Crawlee + Playwright` 的低代码爬虫平台，前端使用 `Vue 3 + Vite + Pinia + Element Plus`。项目目标是让用户通过可视化配置完成页面结构识别、字段映射、抓取执行、结果导出和后台运维，而不是手写爬虫脚本。
+
+当前根目录 `README.md` 作为项目现状说明的唯一主入口。根目录下其他说明文档仍保留，但存在内容重叠和过时风险，后续应逐步合并。
+
+## 1. 当前项目已实现的能力
+
+### 1.1 账号与权限
+
+- 用户注册、登录、JWT 鉴权、Cookie 鉴权。
+- 普通用户与管理员角色区分。
+- 用户资料维护、头像上传、密码修改。
+- 登录状态校验和前端路由守卫。
+
+### 1.2 任务配置与执行
+
+- 任务列表、任务创建、任务编辑、任务复制、任务删除。
+- 五步式任务配置流程：
+  1. 基本信息
+  2. 页面结构选择
+  3. 字段映射
+  4. 执行参数与结果筛选
+  5. 预览测试
+- 支持 XPath / JSPath / CSS 场景下的字段提取。
+- 支持文本、链接、图片、多级详情页、嵌套列表、分页、滚动加载。
+- 支持字段内容格式输出：
+  - `text`
+  - `html`
+  - `markdown`
+  - `smart`
+- 支持任务级预操作 `preActions`，用于点击、等待元素、等待超时等页面交互。
+- 支持 Cookie 注入、UA、自定义超时、并发、重试等执行参数。
+
+### 1.3 结果筛选与通知
+
+- 结果筛选支持字段值比较模式：
+  - 判空
+  - 包含/不包含
+  - 等于/不等于
+  - 大于/大于等于
+  - 小于/小于等于
+- 结果筛选支持用户自定义 `bool` 函数：
+  - 每条规则可直接编写 `functionCode`
+  - 运行时传入 `value`、`item`、`field` 和 `helpers`
+  - 仅当所有规则都通过时，记录才保留
+- 支持任务成功/失败邮件通知。
+- 成功邮件支持附带部分结果预览，预览条数可配置。
+
+### 1.4 博客/文章类内容提取
+
+- 后端增加了 HTML 内容清洗与格式化工具。
+- 当前实现基于：
+  - `jsdom`
+  - `turndown`
+  - 文章主内容启发式选择
+  - 样板区块剔除
+  - 相对资源地址绝对化
+- 能比原始纯文本提取更稳定地处理博客、文章、帖子类正文内容。
+- 目前属于“启发式增强版”，不是完整的第三方正文抽取引擎替代品。
+
+### 1.5 结果打包与下载
+
+- 支持执行结果导出、ZIP 打包、图片/文件/文本分目录落盘。
+- 支持按字段模板自定义文件路径和命名。
+- 下载策略支持：
+  - `direct`：直接请求资源地址
+  - `browser`：使用浏览器页面内下载流程
+  - `auto`：直连失败后自动回退到浏览器下载
+- 浏览器下载已增强为真实页面行为，而不是简单 `fetch`：
+  - 页面内点击
+  - 打开新页
+  - 监听响应流
+  - 监听浏览器下载对象
+- 支持“先访问详情页再触发下载”的可选流程：
+  - 可配置详情页 URL 字段
+  - 可配置详情页稳定等待选择器
+  - 可配置等待超时
+- Pixiv 等有防盗链/Referer 校验的站点已做兼容处理。
+- 当前版本已移除代理相关配置和代理功能入口。
+
+### 1.6 统计与后台管理
+
+- 统计页已实现任务数量、执行情况和部分图表展示。
+- 管理后台已提供以下页面并具备基本功能：
+  - 用户管理
+  - 任务监控
+  - 系统日志
+  - 系统设置
+- 系统设置当前保留：
+  - 基础信息
+  - 爬虫默认参数
+  - 存储清理参数
+  - 安全参数
+  - 邮件参数
+- 系统日志支持查询、筛选、清空、前端导出。
+- 用户管理支持查询、创建、编辑、删除、启停。
+
+### 1.7 任务监控中的“停止任务”
+
+当前已经补到“真正的运行时中断”，不再只是数据库状态修改：
+
+- 管理台点击停止后，会优先请求运行中的 `CrawleeEngineService` 直接中断任务。
+- 运行中的 crawler 会触发 `teardown()`，并关闭详情页浏览器上下文。
+- 爬虫关键路径增加了停止检查，避免任务在停止请求后继续跑完整轮逻辑。
+- 仍保留基于任务状态轮询的 watcher 作为兜底，防止引擎状态与数据库状态意外失步。
+- 如果引擎实例异常未取到，后台会回退到直接标记失败，避免任务长期卡在运行中。
+
+## 2. 主要实现方式
+
+### 2.1 后端
+
+核心目录：`backend/crawler/src`
+
+- `auth`
+  - JWT、角色守卫、登录态控制
+- `user`
+  - 用户资料、头像、账户信息
+- `task`
+  - 任务创建、预览解析、执行调度、结果打包、下载策略、正文格式化
+- `execution`
+  - 执行记录与结果索引
+- `result`
+  - 结果读取与下载
+- `admin`
+  - 用户管理、任务监控、系统日志、系统设置
+- `mail`
+  - SMTP 发信
+- `health`
+  - 健康检查
+
+实现特点：
+
+- 使用 `TypeORM` 管理任务、执行记录、系统设置、日志等实体。
+- 使用 `Crawlee + PlaywrightCrawler` 作为主要抓取引擎。
+- 使用 `Socket.IO` 推送任务状态更新。
+- 使用 `Swagger` 自动生成 API 文档。
+- 使用统一配置模块读取环境变量。
+- 通过 `task-config.utils.ts` 对历史配置进行兼容清洗，避免旧表单字段污染运行时配置。
+
+### 2.2 前端
+
+核心目录：`fronted/Crawler/src`
+
+- `views/task-add`
+  - 任务向导式配置页
+- `views/admin`
+  - 用户管理、任务监控、系统日志、系统设置
+- `components/PackageConfigDialog.vue`
+  - 打包下载策略配置
+- `stores/taskForm.ts`
+  - 任务配置状态管理与归一化
+- `api`
+  - 前后端接口封装
+- `router`
+  - 登录态和管理员权限路由控制
+
+实现特点：
+
+- 使用 `Pinia` 保持任务配置跨步骤共享。
+- 用 `Element Plus` 承载表单、表格、弹窗、分页等管理后台 UI。
+- 任务打包配置已支持自动模式、严格浏览器下载和详情页下载流程配置。
+- 路由中已对管理员页面进行权限限制。
+
+## 3. 当前已确认的页面实现情况
+
+### 已实现
+
+- 登录页
+- 用户资料页
+- 任务列表页
+- 统计页
+- 任务创建五步流程
+- 管理员用户管理页
+- 管理员任务监控页
+- 管理员系统日志页
+- 管理员系统设置页
+
+### 已实现但仍需继续打磨
+
+- 博客正文抽取更偏启发式方案，复杂站点命中率仍有提升空间。
+- 任务停止虽然已经是运行时中断，但前端交互提示还可以更细化，例如显示“已发送停止请求/正在中断”。
+- 系统日志导出是前端基于当前列表数据导出，不是后端异步归档导出。
+- 多个页面仍有中文乱码/编码历史问题，影响可维护性。
+
+## 4. 已发现的冗余和历史遗留
+
+### 4.1 明显冗余
+
+- `fronted/Crawler/src/stores/taskForm.ts`
+  - 存在一块旧版 `legacyCrawlerConfig` 配置，已经不参与当前真实配置流转。
+  - 本次已将其从运行逻辑中剔除，后续建议彻底删除这段历史代码并整理相关类型。
+
+### 4.2 文档冗余
+
+以下根目录文档与当前 README 有明显内容重叠：
+
+- `OPTIMIZATION_COMPLETE.md`
+- `OPTIMIZATION_RECOMMENDATIONS.md`
+- `OPTIMIZATION_SUMMARY.md`
+- `QUICK_START.md`
+
+此外还有多份子目录 README：
+
+- `backend/README.md`
+- `backend/crawler/README.md`
+- `fronted/README.md`
+- `fronted/Crawler/README.md`
+
+建议后续策略：
+
+- 根目录 README 保留为唯一“项目现状总览”
+- 子目录 README 只保留模块级补充说明
+- 旧优化文档改为归档目录或删除
+
+### 4.3 兼容性遗留
+
+- `task-config.utils.ts` 中保留了对旧字段的清洗逻辑，例如老的代理、旧 Step4 配置键等。
+- 这类代码短期内有价值，因为数据库里可能还存在历史任务配置。
+- 如果后续确认历史数据已迁移完，可以逐步删除这层兼容逻辑。
+
+## 5. 当前最值得继续优化的部分
+
+### 高优先级
+
+1. 修复全项目中文乱码和文件编码不一致问题。
+2. 为任务停止补充更明确的状态流转，例如 `stopping`，避免“已点击停止但列表仍短暂显示 running”的认知落差。
+3. 给关键链路补自动化测试：
+   - 任务执行
+   - 结果筛选函数
+   - 打包下载回退
+   - 邮件通知
+   - 管理员停止任务
+
+### 中优先级
+
+1. 引入更成熟的正文抽取方案作为博客内容增强的可选路径：
+   - Mozilla Readability
+   - Postlight Mercury 类方案
+2. 优化大包体积，继续拆分 `vendor-element-plus`、`vendor-echarts`。
+3. 将系统日志导出从前端导出升级为后端生成文件导出。
+4. 清理仍然存在的历史 dead code、注释噪音和重复说明文档。
+
+### 低优先级
+
+1. 统一英文/中文命名风格，例如 `fronted` 目录拼写、部分 `crawleer` 路由路径。
+2. 统一页面提示文案和日志文案。
+3. 补充更多管理员运维说明和部署说明。
+
+## 6. 运行方式
+
+### 6.1 后端
+
+工作目录：
+
 ```bash
 cd backend/crawler
+```
+
+常用命令：
+
+```bash
 npm install
-```
-
-**前端**:
-```bash
-cd fronted/Crawler
-npm install
-```
-
-#### 2. 配置环境变量
-
-在 `backend/crawler` 目录下创建 `.env` 文件：
-
-```env
-# 数据库配置
-DB_HOST=localhost
-DB_PORT=3306
-DB_USER=root
-DB_PASS=your_password
-DB_NAME=crawlee_lowcode
-
-# Redis 配置
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_PASSWORD=
-
-# JWT 配置
-JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
-JWT_EXPIRES_IN=86400
-
-# 服务器配置
-PORT=3000
-NODE_ENV=development
-
-# CORS 配置（生产环境请修改为具体域名）
-ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
-
-# 速率限制配置
-THROTTLE_TTL=60
-THROTTLE_LIMIT=100
-```
-
-**详细配置说明**: 参考 `backend/crawler/ENV_SETUP.md`
-
-#### 3. 初始化数据库
-
-```bash
-cd backend/crawler
-# 运行数据库初始化脚本
-node init-database.js
-```
-
-### 启动项目
-
-#### 启动后端
-
-```bash
-cd backend/crawler
 npm run start:dev
+npm run build
 ```
 
-后端服务将在 `http://localhost:3000` 启动
+后端主要环境变量：
 
-#### 启动前端
+- `PORT`
+- `DB_HOST`
+- `DB_PORT`
+- `DB_USER`
+- `DB_PASS`
+- `DB_NAME`
+- `REDIS_HOST`
+- `REDIS_PORT`
+- `REDIS_PASSWORD`
+- `JWT_SECRET`
+- `JWT_EXPIRES_IN`
+- `ALLOWED_ORIGINS`
+- `THROTTLE_TTL`
+- `THROTTLE_LIMIT`
+
+Swagger 文档默认地址：
+
+```text
+http://localhost:3000/api
+```
+
+### 6.2 前端
+
+工作目录：
 
 ```bash
 cd fronted/Crawler
+```
+
+常用命令：
+
+```bash
+npm install
 npm run dev
+npm run build
 ```
 
-前端服务将在 `http://localhost:5173` 启动
+默认开发地址通常为：
 
-### 访问服务
-
-- **前端应用**: http://localhost:5173
-- **后端 API**: http://localhost:3000
-- **Swagger 文档**: http://localhost:3000/api
-- **健康检查**: http://localhost:3000/health
-
-### 基本使用流程
-
-#### 1. 注册和登录
-
-1. 访问前端应用
-2. 点击"注册"创建账号
-3. 输入邮箱，获取验证码
-4. 完成注册后登录
-
-#### 2. 创建爬虫任务
-
-1. 点击"新增任务"
-2. **步骤1 - 基本信息**: 输入任务名称和 URL
-3. **步骤2 - 结构选择**: 
-   - 选择"列表结构"或"文章结构"
-   - 或使用自动识别功能
-4. **步骤3 - 字段映射**:
-   - 添加要提取的字段
-   - 配置选择器（XPath 或 JSPath）
-   - 设置字段类型（文本/链接/图片）
-5. **步骤4 - 高级配置**:
-   - 设置浏览器参数
-   - 配置并发数、超时等
-6. **步骤5 - 预览**: 预览爬取结果
-7. 保存任务
-
-#### 3. 执行任务
-
-1. 在任务列表中点击"快速执行"
-2. 系统会创建新任务副本并执行
-3. 通过 WebSocket 实时查看执行进度
-4. 执行完成后查看结果
-
-#### 4. 查看结果
-
-1. 在任务列表中展开任务行
-2. 查看爬取的数据
-3. 可以导出为 JSON 或 ZIP 格式
-
-#### 5. 导出数据
-
-1. 在任务结果页面点击"打包结果"
-2. 选择导出格式和配置
-3. 下载导出的文件
-
----
-
-## 📡 API 接口
-
-### 认证相关
-
-#### 用户注册
-```
-POST /api/user/register
-Body: {
-  email: string
-  password: string
-  code: string  // 验证码
-}
+```text
+http://localhost:5173
 ```
 
-#### 用户登录
-```
-POST /api/user/login
-Body: {
-  email: string
-  password: string
-}
-Response: {
-  user: UserDto
-}
-// Token 通过 HttpOnly Cookie 返回
-```
+## 7. 本次核查结论
 
-#### 获取验证码
-```
-GET /api/user/captcha
-Response: {
-  captchaId: string
-  svg: string
-}
-```
+- 管理后台的用户管理、任务监控、系统日志、系统设置页面都已经有实际功能，不是空壳页面。
+- 代理相关功能已从当前主流程移除。
+- 打包下载已经具备自动回退到浏览器下载，以及先访问详情页再下载的配置能力。
+- 任务结果筛选已经支持自定义布尔函数。
+- 任务通知邮件和结果预览能力已经落地。
+- 任务监控中的停止任务已经补成真正的运行时中断，而非纯状态修改。
+- 项目仍存在明显历史遗留，尤其是编码问题、冗余文档、部分旧配置兼容代码。
 
-#### 发送邮箱验证码
-```
-POST /api/user/send-code
-Body: {
-  email: string
-  captchaId: string
-  captchaText: string
-}
-```
+## 8. 当前建议
 
-### 任务相关
+如果继续迭代，建议优先按下面顺序推进：
 
-#### 获取任务列表
-```
-GET /api/task/list?page=1&limit=10&search=关键词
-Headers: Cookie: token=xxx
-Response: {
-  data: TaskItem[]
-  pagination: {
-    page: number
-    limit: number
-    total: number
-    totalPages: number
-  }
-}
-```
-
-#### 执行任务
-```
-POST /api/task/execute
-Body: {
-  taskId?: string        // 可选，不传则创建新任务
-  taskName?: string      // 新任务名称
-  url?: string          // 新任务 URL
-  config?: CrawleeTaskConfig  // 任务配置
-  overrideConfig?: Partial<CrawleeTaskConfig>  // 覆盖配置
-}
-Response: {
-  executionId: number
-  status: 'queued' | 'running' | 'success' | 'failed'
-  message: string
-  queueStatus: {...}
-}
-```
-
-#### 删除任务
-```
-DELETE /api/task
-Body: {
-  name: string
-  url: string
-}
-```
-
-#### 获取执行结果
-```
-GET /api/task/execution-result/:executionId
-Response: {
-  executionId: number
-  taskId: number
-  taskName: string
-  status: string
-  resultCount: number
-  results: any[]
-  createdAt: string
-}
-```
-
-#### 打包结果
-```
-POST /api/task/package-result/:executionId
-Body: {
-  packageConfig: {
-    structure?: {...}
-    download?: {...}
-    fieldMapping?: {...}
-  }
-}
-Response: {
-  message: string
-  packagePath: string
-}
-```
-
-#### 获取统计数据
-```
-GET /api/task/statistics
-Response: {
-  totalTasks: number
-  successTasks: number
-  runningTasks: number
-  failedTasks: number
-  successRate: number
-  trendData: Array<{...}>
-  // ... 更多统计信息
-}
-```
-
-### 任务辅助接口
-
-#### 预览截图
-```
-POST /api/task/preview-screenshot
-Body: {
-  url: string
-}
-Response: {
-  screenshotBase64: string
-}
-```
-
-#### 列表结构识别
-```
-POST /api/task/list-preview
-Body: {
-  url: string
-  targetAspectRatio?: number
-  tolerance?: number
-}
-```
-
-#### XPath 解析
-```
-POST /api/task/xpath-parse
-Body: {
-  url: string
-  xpath: string
-  contentFormat?: 'text' | 'html' | 'markdown' | 'smart'
-}
-Response: {
-  count: number
-  items: ParseResult
-}
-```
-
-#### JSPath 解析
-```
-POST /api/task/jspath-parse
-Body: {
-  url: string
-  jsPath: string
-  waitSelector?: string
-  contentFormat?: 'text' | 'html' | 'markdown' | 'smart'
-}
-```
-
-### 用户相关
-
-#### 获取用户信息
-```
-GET /api/user/profile
-Response: {
-  id: number
-  email: string
-  username: string
-  role: string
-  avatar?: string
-}
-```
-
-#### 更新用户信息
-```
-PATCH /api/user/profile
-Body: {
-  username?: string
-  avatar?: string
-}
-```
-
-#### 修改密码
-```
-PATCH /api/user/password
-Body: {
-  oldPassword: string
-  newPassword: string
-}
-```
-
-#### 上传头像
-```
-POST /api/user/avatar
-Content-Type: multipart/form-data
-Body: {
-  file: File
-}
-```
-
-### 管理员接口
-
-#### 获取所有用户
-```
-GET /api/user/all?page=1&limit=10&search=关键词
-```
-
-#### 获取系统日志
-```
-GET /api/admin/logs?page=1&limit=20&level=info&module=system&startDate=&endDate=
-```
-
-#### 获取系统设置
-```
-GET /api/admin/settings
-```
-
-#### 更新系统设置
-```
-PATCH /api/admin/settings
-Body: {
-  // 设置对象
-}
-```
-
-### 健康检查
-
-#### 完整健康检查
-```
-GET /health
-Response: {
-  status: 'ok' | 'error'
-  info: {
-    database: { status: 'up' }
-    memory_heap: { status: 'up' }
-    memory_rss: { status: 'up' }
-    redis: { status: 'up' }
-  }
-}
-```
-
-#### 就绪检查
-```
-GET /health/ready
-```
-
-#### 存活检查
-```
-GET /health/live
-Response: {
-  status: 'ok'
-  timestamp: string
-}
-```
-
----
-
-## 📂 项目结构
-
-```
-crawlee-lowcode-platform/
-├── backend/
-│   └── crawler/
-│       ├── src/
-│       │   ├── admin/          # 管理员模块
-│       │   ├── auth/           # 认证模块
-│       │   ├── common/          # 公共模块（拦截器、过滤器等）
-│       │   ├── config/         # 配置模块
-│       │   ├── execution/      # 执行记录模块
-│       │   ├── health/         # 健康检查模块
-│       │   ├── mail/           # 邮件服务模块
-│       │   ├── redis/          # Redis 模块
-│       │   ├── result/         # 结果模块
-│       │   ├── task/           # 任务模块（核心）
-│       │   ├── user/           # 用户模块
-│       │   ├── app.module.ts   # 根模块
-│       │   └── main.ts         # 入口文件
-│       ├── dist/               # 编译输出
-│       ├── uploads/            # 上传文件目录
-│       ├── storage/            # Crawlee 存储目录
-│       ├── screenshots/        # 截图目录
-│       ├── package.json
-│       ├── tsconfig.json
-│       └── .env                # 环境变量（需创建）
-│
-├── fronted/
-│   └── Crawler/
-│       ├── src/
-│       │   ├── api/            # API 接口定义
-│       │   ├── assets/         # 静态资源
-│       │   ├── components/     # 公共组件
-│       │   ├── composables/   # 组合式函数
-│       │   ├── layouts/       # 布局组件
-│       │   ├── router/        # 路由配置
-│       │   ├── stores/        # Pinia 状态管理
-│       │   ├── types/         # TypeScript 类型定义
-│       │   ├── utils/         # 工具函数
-│       │   ├── views/         # 页面组件
-│       │   ├── App.vue
-│       │   └── main.ts
-│       ├── package.json
-│       └── vite.config.ts
-│
-├── README.md                   # 项目说明
-├── PROJECT_DOCUMENTATION.md    # 本文档
-├── OPTIMIZATION_COMPLETE.md    # 优化完成总结
-├── OPTIMIZATION_RECOMMENDATIONS.md  # 优化建议
-├── QUICK_START.md              # 快速开始指南
-└── ENV_SETUP.md                # 环境变量配置说明
-```
-
----
-
-## 🔧 开发指南
-
-### 后端开发
-
-#### 添加新模块
-```bash
-cd backend/crawler
-nest g module module-name
-nest g controller module-name
-nest g service module-name
-```
-
-#### 运行测试
-```bash
-npm run test
-npm run test:watch
-npm run test:cov
-npm run test:e2e
-```
-
-#### 代码格式化
-```bash
-npm run format
-npm run lint
-```
-
-### 前端开发
-
-#### 添加新页面
-1. 在 `src/views/` 创建 Vue 组件
-2. 在 `src/router/index.ts` 添加路由
-3. 如需 API，在 `src/api/` 添加接口定义
-
-#### 运行测试
-```bash
-npm run test
-```
-
----
-
-## 📚 相关文档
-
-- `README.md` - 项目基础说明
-- `QUICK_START.md` - 快速开始指南
-- `OPTIMIZATION_COMPLETE.md` - 优化完成总结
-- `OPTIMIZATION_RECOMMENDATIONS.md` - 详细优化建议
-- `ENV_SETUP.md` - 环境变量配置说明
-- `backend/crawler/src/task/README.md` - 任务执行接口说明
-
----
-
-## 🐛 常见问题
-
-### 1. 启动失败：找不到环境变量
-**解决**: 确保在 `backend/crawler` 目录下创建了 `.env` 文件
-
-### 2. 429 错误（速率限制）
-**解决**: 这是正常的保护机制。开发时可临时增加 `THROTTLE_LIMIT` 值
-
-### 3. CORS 错误
-**解决**: 检查 `.env` 文件中的 `ALLOWED_ORIGINS` 配置
-
-### 4. 健康检查失败
-**解决**: 确保 MySQL 和 Redis 服务正在运行
-
-### 5. WebSocket 连接失败
-**解决**: 检查后端 WebSocket 配置和前端连接地址
-
----
-
-## 📝 更新日志
-
-### 2024年 - 优化版本
-
-#### 安全性优化
-- ✅ 环境变量配置管理
-- ✅ CORS 配置优化
-- ✅ API 速率限制
-- ✅ 敏感信息清理
-
-#### 代码质量优化
-- ✅ 日志系统统一化
-- ✅ API 文档完善
-- ✅ 健康检查接口
-
-#### 功能优化
-- ✅ 快速执行功能优化（创建新任务而非覆盖）
-
----
-
-## 📄 许可证
-
-MIT License
-
----
-
-**文档版本**: 1.0  
+1. 统一编码和文案，先解决可维护性问题。
+2. 给停止任务、下载回退、邮件通知、结果筛选补测试。
+3. 引入成熟正文抽取算法，增强博客/文章站点稳定性。
+4. 收敛根目录与子目录的重复文档。
 

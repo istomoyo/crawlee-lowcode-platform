@@ -1,8 +1,10 @@
 import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Like, Between } from 'typeorm';
 import { User } from '../user/entities/user.entity';
 import { Task } from '../task/entities/task.entity';
+import { CrawleeEngineService } from '../task/crawlee-engine.service';
 import { Execution } from '../execution/entities/execution.entity';
 import { SystemLog, LogLevel } from './entities/system-log.entity';
 import { LoggerService } from './logger.service';
@@ -48,8 +50,22 @@ export class AdminService {
     private readonly logRepository: Repository<SystemLog>,
     private readonly loggerService: LoggerService,
     private readonly systemSettingsService: SystemSettingsService,
+    private readonly moduleRef: ModuleRef,
   ) {
     this.systemStartTime = new Date();
+  }
+
+  private getCrawleeEngineService(): CrawleeEngineService | null {
+    try {
+      return this.moduleRef.get(CrawleeEngineService, { strict: false });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to resolve CrawleeEngineService: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return null;
+    }
   }
 
   // ==================== 用户管理 ====================
@@ -346,9 +362,16 @@ export class AdminService {
     }
 
     // 更新任务状态
-    task.status = 'failed';
-    task.endTime = new Date();
-    await this.taskRepository.save(task);
+    const crawlerEngine = this.getCrawleeEngineService();
+    const stopResult = crawlerEngine
+      ? await crawlerEngine.requestTaskStop(taskId, 'Task stopped by administrator')
+      : 'not_found';
+
+    if (stopResult === 'not_found') {
+      task.status = 'failed';
+      task.endTime = new Date();
+      await this.taskRepository.save(task);
+    }
 
     await this.loggerService.warn('admin', `管理员停止了任务: ${task.name}`, {
       taskId: task.id,

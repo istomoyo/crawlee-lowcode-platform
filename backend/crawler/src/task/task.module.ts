@@ -8,8 +8,14 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Task } from './entities/task.entity';
 import { User } from '../user/entities/user.entity';
 import { Execution } from '../execution/entities/execution.entity';
+import { AdminModule } from '../admin/admin.module';
+import { MailModule } from '../mail/mail.module';
 @Module({
-  imports: [TypeOrmModule.forFeature([Task, User, Execution])],
+  imports: [
+    TypeOrmModule.forFeature([Task, User, Execution]),
+    AdminModule,
+    MailModule,
+  ],
   controllers: [TaskController],
   providers: [TaskService, TaskGateway, CrawleeEngineService, FilePackageService],
 })

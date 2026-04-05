@@ -2,16 +2,17 @@
   <el-card class="mt-6 p-4 flex flex-col h-full space-y-4">
     <div>
       <h3 class="font-bold text-lg">最终配置</h3>
-      <p class="text-sm text-gray-500">配置爬虫的运行参数和高级选项</p>
+      <p class="text-sm text-gray-500">
+        设置任务运行参数、Cookie、结果筛选规则，以及执行完成后的邮件通知。
+      </p>
     </div>
 
     <div class="flex-1 overflow-auto space-y-6">
-      <!-- 基本设置 -->
       <el-card shadow="never">
         <template #header>
           <div class="flex items-center gap-2">
             <el-icon><Setting /></el-icon>
-            <span>基本设置</span>
+            <span>基础设置</span>
           </div>
         </template>
 
@@ -21,22 +22,20 @@
               v-model="config.maxConcurrency"
               :min="1"
               :max="20"
-              placeholder="5"
               class="w-32"
             />
-            <span class="text-sm text-gray-500 ml-2">同时处理的请求数</span>
+            <span class="text-sm text-gray-500 ml-2">同一时间并行处理的请求数量</span>
           </el-form-item>
 
           <el-form-item label="请求间隔(ms)">
             <el-input-number
               v-model="config.requestInterval"
               :min="0"
-              :max="5000"
+              :max="10000"
               :step="100"
-              placeholder="1000"
               class="w-32"
             />
-            <span class="text-sm text-gray-500 ml-2">每次请求之间的延时</span>
+            <span class="text-sm text-gray-500 ml-2">每次请求和重试前的等待时间</span>
           </el-form-item>
 
           <el-form-item label="超时时间(s)">
@@ -44,10 +43,9 @@
               v-model="config.timeout"
               :min="10"
               :max="300"
-              placeholder="30"
               class="w-32"
             />
-            <span class="text-sm text-gray-500 ml-2">单个请求的超时时间</span>
+            <span class="text-sm text-gray-500 ml-2">页面导航和元素等待超时时间</span>
           </el-form-item>
 
           <el-form-item label="最大重试次数">
@@ -55,15 +53,13 @@
               v-model="config.maxRetries"
               :min="0"
               :max="10"
-              placeholder="3"
               class="w-32"
             />
-            <span class="text-sm text-gray-500 ml-2">请求失败后的重试次数</span>
+            <span class="text-sm text-gray-500 ml-2">请求失败或字段为空时的重试次数</span>
           </el-form-item>
         </el-form>
       </el-card>
 
-      <!-- Cookie 设置 -->
       <el-card shadow="never">
         <template #header>
           <div class="flex items-center gap-2">
@@ -73,130 +69,46 @@
         </template>
 
         <el-form :model="config" label-width="120px" class="space-y-4">
-          <el-form-item label="是否需要 Cookie">
+          <el-form-item label="启用 Cookie">
             <el-switch
               v-model="config.useCookie"
-              active-text="是"
-              inactive-text="否"
-            />
-          </el-form-item>
-
-          <el-form-item v-if="config.useCookie" label="Cookie 内容">
-            <el-input
-              v-model="config.cookieString"
-              type="textarea"
-              :rows="4"
-              placeholder="粘贴完整的 Cookie 字符串，例如：sessionid=abc123; userid=12345"
-              class="font-mono text-sm"
-            />
-            <div class="text-xs text-gray-500 mt-1">
-              <p>• 从浏览器开发者工具中复制完整的 Cookie 字符串</p>
-              <p>• 格式：name1=value1; name2=value2; ...</p>
-            </div>
-          </el-form-item>
-
-          <el-form-item v-if="config.useCookie" label="Cookie 域名">
-            <el-input
-              v-model="config.cookieDomain"
-              placeholder="example.com"
-              class="font-mono"
-            />
-            <span class="text-xs text-gray-500 ml-2">设置 Cookie 的有效域名</span>
-          </el-form-item>
-        </el-form>
-      </el-card>
-
-      <!-- 代理设置 -->
-      <el-card shadow="never">
-        <template #header>
-          <div class="flex items-center gap-2">
-            <el-icon><Monitor /></el-icon>
-            <span>代理设置</span>
-          </div>
-        </template>
-
-        <el-form :model="config" label-width="120px" class="space-y-4">
-          <el-form-item label="使用代理">
-            <el-switch
-              v-model="config.useProxy"
-              active-text="是"
-              inactive-text="否"
-            />
-          </el-form-item>
-
-          <el-form-item v-if="config.useProxy" label="代理服务器">
-            <el-input
-              v-model="config.proxyUrl"
-              placeholder="http://proxy.example.com:8080"
-              class="font-mono"
-            />
-          </el-form-item>
-
-          <el-form-item v-if="config.useProxy" label="代理认证">
-            <el-input
-              v-model="config.proxyAuth"
-              placeholder="username:password"
-              class="font-mono"
-            />
-            <span class="text-xs text-gray-500 ml-2">格式：用户名:密码</span>
-          </el-form-item>
-        </el-form>
-      </el-card>
-
-      <!-- 数据处理设置 -->
-      <el-card shadow="never">
-        <template #header>
-          <div class="flex items-center gap-2">
-            <el-icon><DocumentCopy /></el-icon>
-            <span>数据处理</span>
-          </div>
-        </template>
-
-        <el-form :model="config" label-width="120px" class="space-y-4">
-          <el-form-item label="去重处理">
-            <el-switch
-              v-model="config.removeDuplicates"
               active-text="启用"
-              inactive-text="禁用"
+              inactive-text="关闭"
             />
-            <span class="text-sm text-gray-500 ml-2">自动移除重复数据</span>
+            <span class="text-sm text-gray-500 ml-2">
+              详情页访问和后续打包下载都会复用这里配置的 Cookie
+            </span>
           </el-form-item>
 
-          <el-form-item label="数据验证">
-            <el-switch
-              v-model="config.enableValidation"
-              active-text="启用"
-              inactive-text="禁用"
-            />
-            <span class="text-sm text-gray-500 ml-2">对爬取数据进行基本验证</span>
-          </el-form-item>
+          <template v-if="config.useCookie">
+            <el-form-item label="Cookie 内容">
+              <el-input
+                v-model="config.cookieString"
+                type="textarea"
+                :rows="4"
+                placeholder="例如：sessionid=abc123; token=xyz456"
+                class="font-mono text-sm"
+              />
+              <div class="text-xs text-gray-500 mt-1">
+                直接粘贴浏览器请求头中的整段 Cookie 即可，格式为
+                `name1=value1; name2=value2`
+              </div>
+            </el-form-item>
 
-
-          <el-form-item label="文件名模板">
-            <el-input
-              v-model="config.filenameTemplate"
-              placeholder="results_{timestamp}"
-              class="font-mono"
-            />
-            <div class="text-xs text-gray-500 mt-1">
-              <p>• 支持变量：{timestamp}, {date}, {name}</p>
-              <p>• 例如：data_{date}_{name}.json</p>
-            </div>
-          </el-form-item>
-
-          <el-form-item label="自定义 JS 处理">
-            <el-input
-              v-model="config.customItemProcessorCode"
-              type="textarea"
-              :rows="6"
-              placeholder="// 可选：对每条 item 进行自定义处理\n// item 为当前一条数据对象，必须 return：\n// - 返回对象：作为新的 item\n// - 返回 null/undefined/false：丢弃该条数据\n// 示例：只保留播放量 >= 10000 的视频\n// const play = Number((item['播放量'] || '0').replace(/[^0-9]/g, ''));\n// if (play < 10000) return null;\n// item['标题'] = (item['标题'] || '').trim();\n// return item;"
-              class="font-mono text-xs"
-            />
-          </el-form-item>
+            <el-form-item label="Cookie 域名">
+              <el-input
+                v-model="config.cookieDomain"
+                placeholder="留空时自动使用任务 URL 域名，例如 example.com"
+                class="font-mono"
+              />
+              <span class="text-xs text-gray-500 ml-2">
+                用于限制 Cookie 发送范围，资源打包下载时也会按这个域名匹配
+              </span>
+            </el-form-item>
+          </template>
         </el-form>
       </el-card>
 
-      <!-- 结果筛选（按字段值过滤记录） -->
       <el-card shadow="never">
         <template #header>
           <div class="flex items-center gap-2">
@@ -205,307 +117,175 @@
           </div>
         </template>
 
-        <div class="text-xs text-gray-500 mb-3">
-          例如：爬取 B 站首页视频时，可以设置「播放量 ≥ 某个值」「标题包含关键词」「UP 主名称不为空」等条件，不满足条件的整条数据会被丢弃。
-        </div>
-
-        <el-form :model="config" label-width="120px" class="space-y-4">
-          <el-form-item label="自定义布尔函数">
-            <el-input
-              v-model="config.customFilterCode"
-              type="textarea"
-              :rows="3"
-              placeholder="return (Number((item['播放量']||'0').replace(/\D/g,'')) || 0) >= 10000;  // 入参 item，true 保留 false 丢弃，与上方规则同时生效"
-              class="font-mono text-xs"
-            />
-            <div class="text-xs text-gray-500 mt-1">可选。与上方规则同时生效（规则 AND 本函数），入参 item，需 return 布尔值。</div>
-          </el-form-item>
-
-          <el-form-item label="筛选规则">
-            <div class="w-full space-y-2">
-              <div class="flex justify-between items-center mb-2">
-                <span class="text-sm text-gray-500">
-                  所有规则都会按「并且（AND）」关系组合，全部满足才保留该条数据。
-                </span>
-                <el-button size="small" type="primary" @click="addResultFilter">
-                  新增规则
-                </el-button>
+        <div class="space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div class="text-sm text-gray-600">
+                所有规则按 AND 生效，只有满足全部规则的记录才会被保留。
               </div>
-
-              <el-empty
-                v-if="config.resultFilters.length === 0"
-                description="暂未添加筛选规则"
-                :image-size="60"
-              />
-
-              <el-card
-                v-for="rule in config.resultFilters"
-                :key="rule.id"
-                class="mb-2"
-                shadow="never"
-                body-class="space-y-2"
-              >
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-2 items-center">
-                  <div>
-                    <div class="text-xs text-gray-500 mb-1">字段</div>
-                    <el-select
-                      v-model="rule.field"
-                      filterable
-                      allow-create
-                      default-first-option
-                      placeholder="选择或输入字段名，如：播放量"
-                      size="small"
-                      class="w-full"
-                    >
-                      <el-option
-                        v-for="name in fieldNameOptions"
-                        :key="name"
-                        :label="name"
-                        :value="name"
-                      />
-                    </el-select>
-                  </div>
-
-                  <div>
-                    <div class="text-xs text-gray-500 mb-1">条件</div>
-                    <el-select
-                      v-model="rule.operator"
-                      size="small"
-                      placeholder="选择条件类型"
-                      class="w-full"
-                    >
-                      <el-option
-                        v-for="op in operatorOptions"
-                        :key="op.value"
-                        :label="op.label"
-                        :value="op.value"
-                      />
-                    </el-select>
-                  </div>
-
-                  <div class="flex items-center gap-2">
-                    <div class="flex-1">
-                      <div class="text-xs text-gray-500 mb-1">比较值</div>
-                      <el-input
-                        v-model="rule.value"
-                        size="small"
-                        placeholder="例如：10000 或 某关键词"
-                      />
-                    </div>
-                    <el-button
-                      type="danger"
-                      size="small"
-                      text
-                      @click="removeResultFilter(rule.id)"
-                    >
-                      删除
-                    </el-button>
-                  </div>
-                </div>
-              </el-card>
+              <div class="text-xs text-gray-500 mt-1">
+                支持普通比较模式，也支持为单个字段编写自定义 bool 函数。
+              </div>
             </div>
-          </el-form-item>
-        </el-form>
-      </el-card>
-
-      <!-- 页面交互（搜索与筛选） -->
-      <el-card shadow="never">
-        <template #header>
-          <div class="flex items-center gap-2">
-            <el-icon><Tools /></el-icon>
-            <span>页面交互（搜索与筛选）</span>
+            <el-button size="small" type="primary" @click="addResultFilter">
+              新增规则
+            </el-button>
           </div>
-        </template>
 
-        <el-form
-          :model="configInteraction"
-          label-width="120px"
-          class="space-y-4"
-        >
-          <!-- 搜索关键词 -->
-          <el-form-item label="启用搜索">
-            <el-switch
-              v-model="configInteraction.searchEnabled"
-              active-text="是"
-              inactive-text="否"
-            />
-            <span class="text-sm text-gray-500 ml-2">
-              适用于必须先在搜索框输入关键词才能看到列表数据的页面
-            </span>
-          </el-form-item>
+          <el-empty
+            v-if="config.resultFilters.length === 0"
+            description="暂未添加筛选规则"
+            :image-size="60"
+          />
 
-          <template v-if="configInteraction.searchEnabled">
-            <el-form-item label="输入框类型">
-              <el-radio-group v-model="configInteraction.searchInputType">
-                <el-radio value="xpath">XPath</el-radio>
-                <el-radio value="jsPath">JSPath</el-radio>
-              </el-radio-group>
-            </el-form-item>
-
-            <el-form-item label="输入框选择器">
-              <el-input
-                v-model="configInteraction.searchInputSelector"
-                placeholder="//input[@name='q'] 或 document.querySelector('input[name=q]')"
-                class="font-mono text-sm"
-              />
-            </el-form-item>
-
-            <el-form-item label="关键词来源">
-              <el-radio-group v-model="configInteraction.searchKeywordMode">
-                <el-radio value="fixed">固定关键词</el-radio>
-                <el-radio value="dynamic">动态（由后端/任务参数提供）</el-radio>
-              </el-radio-group>
-            </el-form-item>
-
-            <el-form-item
-              v-if="configInteraction.searchKeywordMode === 'fixed'"
-              label="关键词值"
+          <div v-else class="space-y-3">
+            <el-card
+              v-for="rule in config.resultFilters"
+              :key="rule.id"
+              shadow="never"
+              body-class="space-y-3"
             >
-              <el-input
-                v-model="configInteraction.searchKeywordValue"
-                placeholder="例如：手机壳"
-              />
-            </el-form-item>
-
-            <el-form-item label="触发方式">
-              <el-radio-group v-model="configInteraction.searchSubmitType">
-                <el-radio value="enter">按回车</el-radio>
-                <el-radio value="click">点击按钮</el-radio>
-              </el-radio-group>
-            </el-form-item>
-
-            <el-form-item
-              v-if="configInteraction.searchSubmitType === 'click'"
-              label="按钮选择器"
-            >
-              <el-input
-                v-model="configInteraction.searchSubmitSelector"
-                placeholder="//button[@type='submit'] 或 document.querySelector('button.search')"
-                class="font-mono text-sm"
-              />
-            </el-form-item>
-          </template>
-
-          <!-- 数据筛选 -->
-          <el-form-item label="筛选条件">
-            <div class="w-full space-y-2">
-              <div class="flex justify-between items-center mb-2">
-                <span class="text-sm text-gray-500">
-                  可配置站内筛选条件，例如「只显示有货」、「价格区间」等
-                </span>
-                <el-button size="small" type="primary" @click="addFilter">
-                  新增筛选条件
-                </el-button>
-              </div>
-
-              <el-empty
-                v-if="configInteraction.filters.length === 0"
-                description="暂未添加筛选条件"
-                :image-size="60"
-              />
-
-              <el-card
-                v-for="filter in configInteraction.filters"
-                :key="filter.id"
-                class="mb-2"
-                shadow="never"
-                body-class="space-y-2"
-              >
-                <div class="flex justify-between items-center">
-                  <el-input
-                    v-model="filter.label"
-                    size="small"
-                    placeholder="筛选名称，例如：只显示有货"
-                    class="mr-2"
-                  />
-                  <el-button
-                    type="danger"
-                    size="small"
-                    text
-                    @click="removeFilter(filter.id)"
+              <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <div>
+                  <div class="text-xs text-gray-500 mb-1">字段名</div>
+                  <el-select
+                    v-model="rule.field"
+                    filterable
+                    allow-create
+                    default-first-option
+                    placeholder="例如：标题 / 播放量"
+                    class="w-full"
                   >
-                    删除
-                  </el-button>
-                </div>
-
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  <div>
-                    <div class="text-xs text-gray-500 mb-1">操作类型</div>
-                    <el-radio-group v-model="filter.actionType" size="small">
-                      <el-radio value="click">点击触发</el-radio>
-                      <el-radio value="select">选择值</el-radio>
-                    </el-radio-group>
-                  </div>
-
-                  <div>
-                    <div class="text-xs text-gray-500 mb-1">选择器类型</div>
-                    <el-radio-group v-model="filter.selectorType" size="small">
-                      <el-radio value="xpath">XPath</el-radio>
-                      <el-radio value="jsPath">JSPath</el-radio>
-                    </el-radio-group>
-                  </div>
+                    <el-option
+                      v-for="name in fieldNameOptions"
+                      :key="name"
+                      :label="name"
+                      :value="name"
+                    />
+                  </el-select>
                 </div>
 
                 <div>
-                  <div class="text-xs text-gray-500 mb-1">元素选择器</div>
-                  <el-input
-                    v-model="filter.selector"
-                    size="small"
-                    class="font-mono text-xs"
-                    placeholder="//button[contains(., '只看有货')] 或 document.querySelector('#filter')"
-                  />
+                  <div class="text-xs text-gray-500 mb-1">模式</div>
+                  <el-select
+                    v-model="rule.mode"
+                    placeholder="选择模式"
+                    class="w-full"
+                  >
+                    <el-option
+                      v-for="option in ruleModeOptions"
+                      :key="option.value"
+                      :label="option.label"
+                      :value="option.value"
+                    />
+                  </el-select>
                 </div>
 
-                <div v-if="filter.actionType === 'select'">
-                  <div class="text-xs text-gray-500 mb-1">选择的值（可选）</div>
-                  <el-input
-                    v-model="filter.value"
-                    size="small"
-                    placeholder="例如：0-100 或 北京"
-                  />
+                <div v-if="rule.mode !== 'function'">
+                  <div class="text-xs text-gray-500 mb-1">条件</div>
+                  <el-select
+                    v-model="rule.operator"
+                    placeholder="选择条件"
+                    class="w-full"
+                  >
+                    <el-option
+                      v-for="option in operatorOptions"
+                      :key="option.value"
+                      :label="option.label"
+                      :value="option.value"
+                    />
+                  </el-select>
                 </div>
-              </el-card>
-            </div>
-          </el-form-item>
-        </el-form>
+
+                <div v-if="rule.mode !== 'function'">
+                  <div class="text-xs text-gray-500 mb-1">比较值</div>
+                  <el-input
+                    v-if="needsValue(rule.operator || 'contains')"
+                    v-model="rule.value"
+                    placeholder="例如：10000 / 关键词"
+                  />
+                  <div
+                    v-else
+                    class="h-8 px-3 rounded border border-dashed border-gray-300 text-xs text-gray-500 flex items-center"
+                  >
+                    当前条件不需要填写比较值
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="rule.mode === 'function'" class="space-y-2">
+                <div class="text-xs text-gray-500">
+                  可用参数：`value`、`item`、`field`、`helpers`。请在代码中
+                  `return true` 或 `return false`。
+                </div>
+                <el-input
+                  v-model="rule.functionCode"
+                  type="textarea"
+                  :rows="4"
+                  class="font-mono text-xs"
+                  placeholder="return helpers.hasValue(value) && helpers.toNumber(value) >= 10000;"
+                />
+                <div class="text-xs text-gray-500">
+                  helpers 可用：`text()`、`toNumber()`、`hasValue()`、`includes()`、`matches()`、`length()`
+                </div>
+              </div>
+
+              <div class="flex justify-end">
+                <el-button
+                  type="danger"
+                  size="small"
+                  text
+                  @click="removeResultFilter(rule.id)"
+                >
+                  删除规则
+                </el-button>
+              </div>
+            </el-card>
+          </div>
+        </div>
       </el-card>
 
-      <!-- 高级设置 -->
       <el-card shadow="never">
         <template #header>
           <div class="flex items-center gap-2">
-            <el-icon><Tools /></el-icon>
-            <span>高级设置</span>
+            <el-icon><Bell /></el-icon>
+            <span>任务结果邮件通知</span>
           </div>
         </template>
 
-        <el-form :model="config" label-width="120px" class="space-y-4">
-          <el-form-item label="浏览器设置">
-            <div class="space-y-2">
-              <el-checkbox v-model="config.headless">无头模式</el-checkbox>
-              <el-checkbox v-model="config.disableImages">禁用图片加载</el-checkbox>
-              <el-checkbox v-model="config.disableStyles">禁用样式加载</el-checkbox>
-            </div>
+        <el-form :model="config.notification" label-width="140px" class="space-y-4">
+          <el-form-item label="启用邮件通知">
+            <el-switch
+              v-model="config.notification.enabled"
+              active-text="启用"
+              inactive-text="关闭"
+            />
+            <span class="text-sm text-gray-500 ml-2">
+              依赖系统设置中的 SMTP 配置，邮件发送给任务所属用户
+            </span>
           </el-form-item>
 
-          <el-form-item label="User Agent">
-            <el-input
-              v-model="config.userAgent"
-              placeholder="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-              class="font-mono text-sm"
-            />
-          </el-form-item>
+          <template v-if="config.notification.enabled">
+            <el-form-item label="成功时通知">
+              <el-switch v-model="config.notification.onSuccess" />
+            </el-form-item>
 
-          <el-form-item label="自定义 Headers">
-            <el-input
-              v-model="config.customHeaders"
-              type="textarea"
-              :rows="3"
-              placeholder='{"Accept-Language": "zh-CN,zh;q=0.9", "Accept-Encoding": "gzip, deflate"}'
-              class="font-mono text-sm"
-            />
-            <span class="text-xs text-gray-500 mt-1">JSON 格式的自定义请求头</span>
-          </el-form-item>
+            <el-form-item label="失败时通知">
+              <el-switch v-model="config.notification.onFailure" />
+            </el-form-item>
+
+            <el-form-item label="预览条数">
+              <el-input-number
+                v-model="config.notification.previewCount"
+                :min="0"
+                :max="10"
+                class="w-32"
+              />
+              <span class="text-sm text-gray-500 ml-2">
+                成功邮件中附带前 N 条结果预览，填 0 表示不附带预览
+              </span>
+            </el-form-item>
+          </template>
         </el-form>
       </el-card>
     </div>
@@ -518,181 +298,209 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, onMounted, computed } from "vue";
+import { computed, onMounted, reactive } from "vue";
 import { useRouter } from "vue-router";
-import { useTaskFormStore } from "@/stores/taskForm";
+import { ElMessage } from "element-plus";
 import {
   Setting,
   Management,
   DocumentCopy,
-  Tools,
+  Bell,
 } from "@element-plus/icons-vue";
+import {
+  useTaskFormStore,
+  normalizeCrawlerConfig,
+  type ResultFilterMode,
+  type ResultFilterOperator,
+  type ResultFilterRule,
+  type TaskNotificationConfig,
+} from "@/stores/taskForm";
+
+type Step4ConfigState = {
+  maxConcurrency: number;
+  requestInterval: number;
+  timeout: number;
+  maxRetries: number;
+  useCookie: boolean;
+  cookieString: string;
+  cookieDomain: string;
+  resultFilters: ResultFilterRule[];
+  notification: TaskNotificationConfig;
+};
 
 const store = useTaskFormStore();
 const router = useRouter();
 
-let filterIdSeed = 1;
 let resultFilterIdSeed = 1;
 
-// 配置对象
-const config = reactive({
-  // 基本设置
+const config = reactive<Step4ConfigState>({
   maxConcurrency: 5,
   requestInterval: 1000,
-  timeout: 30,
+  timeout: 60,
   maxRetries: 3,
-
-  // Cookie 设置
   useCookie: false,
   cookieString: "",
   cookieDomain: "",
-
-  // 代理设置
-  useProxy: false,
-  proxyUrl: "",
-  proxyAuth: "",
-
-  // 数据处理
-  removeDuplicates: true,
-  enableValidation: true,
-  outputFormat: "json",
-  filenameTemplate: "results_{timestamp}",
-
-  // 自定义 JS 处理
-  customItemProcessorCode: "",
-
-  // 结果筛选规则
-  resultFilters: [] as any[],
-  // 结果筛选：自定义布尔函数（可选）
-  customFilterCode: "",
-
-  // 页面交互（搜索与筛选）
-  interaction: {
-    searchEnabled: false,
-    searchInputType: "xpath",
-    searchInputSelector: "",
-    searchKeywordMode: "fixed",
-    searchKeywordValue: "",
-    searchSubmitType: "enter",
-    searchSubmitSelector: "",
-    filters: [] as any[],
+  resultFilters: [],
+  notification: {
+    enabled: false,
+    onSuccess: true,
+    onFailure: true,
+    previewCount: 3,
   },
-
-  // 高级设置
-  headless: true,
-  disableImages: false,
-  disableStyles: false,
-  userAgent: "",
-  customHeaders: "",
 });
 
-// 为了简化模板中的绑定，单独暴露一个引用
-const configInteraction = config.interaction;
+const operatorOptions: Array<{ label: string; value: ResultFilterOperator }> = [
+  { label: "为空", value: "is_empty" },
+  { label: "不为空", value: "is_not_empty" },
+  { label: "大于", value: "gt" },
+  { label: "大于等于", value: "gte" },
+  { label: "小于", value: "lt" },
+  { label: "小于等于", value: "lte" },
+  { label: "等于", value: "eq" },
+  { label: "不等于", value: "neq" },
+  { label: "包含", value: "contains" },
+  { label: "不包含", value: "not_contains" },
+];
 
-// 用于结果筛选的可选字段名（来自字段映射树）
+const ruleModeOptions: Array<{ label: string; value: ResultFilterMode }> = [
+  { label: "条件比较", value: "operator" },
+  { label: "Bool 函数", value: "function" },
+];
+
 const fieldNameOptions = computed(() => {
   const names: string[] = [];
 
-  function visit(nodes: any[]) {
+  const visit = (nodes: any[]) => {
     for (const node of nodes) {
-      if (node.type === "field" && node.label) {
+      if (["field", "image", "link"].includes(node.type) && node.label) {
         names.push(node.label);
       }
-      if (node.children && node.children.length > 0) {
+      if (node.children?.length) {
         visit(node.children);
       }
     }
-  }
+  };
 
   visit(store.treeData as any[]);
-
   return Array.from(new Set(names));
 });
 
-const operatorOptions = [
-  { label: "大于等于（数值）", value: "gte" },
-  { label: "小于等于（数值）", value: "lte" },
-  { label: "等于", value: "eq" },
-  { label: "包含（字符串）", value: "contains" },
-  { label: "不包含（字符串）", value: "not_contains" },
-];
-
-// 从 store 中恢复配置
 onMounted(() => {
-  if (store.crawlerConfig) {
-    Object.assign(config, store.crawlerConfig);
+  const restored = normalizeCrawlerConfig(store.crawlerConfig as any);
 
-    if (!(config as any).interaction) {
-      (config as any).interaction = {
-        searchEnabled: false,
-        searchInputType: "xpath",
-        searchInputSelector: "",
-        searchKeywordMode: "fixed",
-        searchKeywordValue: "",
-        searchSubmitType: "enter",
-        searchSubmitSelector: "",
-        filters: [],
-      };
-    }
-    if ((config as any).customFilterCode === undefined) {
-      (config as any).customFilterCode = "";
-    }
+  config.maxConcurrency = restored.maxConcurrency;
+  config.requestInterval = restored.requestInterval;
+  config.timeout = restored.timeout;
+  config.maxRetries = restored.maxRetries;
+  config.useCookie = restored.useCookie;
+  config.cookieString = restored.cookieString;
+  config.cookieDomain = restored.cookieDomain;
+  config.resultFilters = restored.resultFilters.map((rule) => ({
+    ...rule,
+    mode: rule.mode || (rule.functionCode ? "function" : "operator"),
+  }));
+  config.notification = {
+    ...restored.notification,
+  };
 
-    const filters = (config as any).interaction.filters || [];
-    if (filters.length > 0) {
-      const maxId = Math.max(...filters.map((f: any) => f.id || 0), 0);
-      filterIdSeed = maxId + 1;
-    }
-
-    const resultFilters = (config as any).resultFilters || [];
-    if (resultFilters.length > 0) {
-      const maxResultId = Math.max(
-        ...resultFilters.map((f: any) => f.id || 0),
-        0
-      );
-      resultFilterIdSeed = maxResultId + 1;
-    }
+  if (config.resultFilters.length > 0) {
+    resultFilterIdSeed =
+      Math.max(...config.resultFilters.map((rule) => rule.id || 0), 0) + 1;
   }
 });
 
-function addFilter() {
-  configInteraction.filters.push({
-    id: filterIdSeed++,
-    label: "",
-    actionType: "click",
-    selectorType: "xpath",
-    selector: "",
-    value: "",
-  });
-}
-
-function removeFilter(id: number) {
-  const idx = configInteraction.filters.findIndex((f: any) => f.id === id);
-  if (idx !== -1) {
-    configInteraction.filters.splice(idx, 1);
-  }
+function needsValue(operator: ResultFilterOperator) {
+  return operator !== "is_empty" && operator !== "is_not_empty";
 }
 
 function addResultFilter() {
-  (config.resultFilters as any[]).push({
+  config.resultFilters.push({
     id: resultFilterIdSeed++,
     field: "",
-    operator: "gte",
+    mode: "operator",
+    operator: "contains",
     value: "",
+    functionCode: "",
   });
 }
 
 function removeResultFilter(id: number) {
-  const list = config.resultFilters as any[];
-  const idx = list.findIndex((r: any) => r.id === id);
-  if (idx !== -1) {
-    list.splice(idx, 1);
+  const index = config.resultFilters.findIndex((rule) => rule.id === id);
+  if (index !== -1) {
+    config.resultFilters.splice(index, 1);
   }
 }
 
-// 保存配置到 store
+function validateConfig() {
+  if (config.useCookie && !config.cookieString.trim()) {
+    ElMessage.error("启用 Cookie 后必须填写 Cookie 内容");
+    return false;
+  }
+
+  const invalidRule = config.resultFilters.find((rule) => {
+    if (!rule.field.trim()) {
+      return true;
+    }
+
+    if (rule.mode === "function") {
+      return !String(rule.functionCode ?? "").trim();
+    }
+
+    if (!rule.operator) {
+      return true;
+    }
+
+    if (needsValue(rule.operator) && !String(rule.value ?? "").trim()) {
+      return true;
+    }
+
+    return false;
+  });
+
+  if (invalidRule) {
+    ElMessage.error("结果筛选规则未填写完整，请检查字段、模式和规则内容");
+    return false;
+  }
+
+  if (
+    config.notification.enabled &&
+    !config.notification.onSuccess &&
+    !config.notification.onFailure
+  ) {
+    ElMessage.error("启用邮件通知后，至少选择成功或失败中的一种通知时机");
+    return false;
+  }
+
+  return true;
+}
+
 function saveConfig() {
-  store.crawlerConfig = { ...(config as any) };
+  Object.assign(
+    store.crawlerConfig,
+    normalizeCrawlerConfig({
+      ...(store.crawlerConfig as any),
+      ...config,
+      notification: {
+        enabled: config.notification.enabled,
+        onSuccess: config.notification.onSuccess,
+        onFailure: config.notification.onFailure,
+        previewCount: config.notification.previewCount,
+      },
+      resultFilters: config.resultFilters.map((rule) => ({
+        ...rule,
+        field: rule.field.trim(),
+        mode: rule.mode || "operator",
+        operator: rule.mode === "function" ? undefined : rule.operator,
+        value:
+          rule.mode === "function" ? "" : String(rule.value ?? "").trim(),
+        functionCode:
+          rule.mode === "function"
+            ? String(rule.functionCode ?? "").trim()
+            : "",
+      })),
+    }),
+  );
 }
 
 function goBack() {
@@ -701,6 +509,10 @@ function goBack() {
 }
 
 function goNext() {
+  if (!validateConfig()) {
+    return;
+  }
+
   saveConfig();
   router.push("/crawleer/task-add/preview");
 }
@@ -708,6 +520,6 @@ function goNext() {
 
 <style scoped>
 .font-mono {
-  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
 }
 </style>

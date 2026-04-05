@@ -52,7 +52,6 @@ POST /task/execute
 - `headless`: 是否无头模式
 - `viewport`: 浏览器视口大小
 - `userAgent`: 自定义User-Agent
-- `proxyUrl`: 代理服务器URL
 
 ### 等待和超时配置
 - `waitForSelector`: 等待特定选择器出现

@@ -20,6 +20,11 @@ import { CrawleeTaskConfig } from './dto/execute-task.dto';
 import { CrawleeEngineService } from './crawlee-engine.service';
 import { TaskGateway } from './task.gateway';
 import { FilePackageService } from './file-package.service';
+import {
+  getCookieMatchDomain,
+  sanitizeTaskConfig,
+} from './task-config.utils';
+import { formatHtmlFragment } from './content-extraction.utils';
 
 // 默认“类真实浏览器”配置
 const DEFAULT_USER_AGENT =
@@ -444,13 +449,55 @@ export class TaskService {
       // 再次等待，确保动态内容加载完成
       await page.waitForTimeout(1000);
 
-      // 如果需要 markdown 转换，注入 turndown 库
-      if (contentFormat === 'markdown') {
-        await page.addScriptTag({
-          url: 'https://cdn.jsdelivr.net/npm/turndown@7.1.3/dist/turndown.js'
-        });
-        // 等待脚本加载
-        await page.waitForTimeout(500);
+      if (contentFormat === 'markdown' || contentFormat === 'smart') {
+        const htmlPayload = await page.evaluate(({ xpath }) => {
+          const firstElement = document.evaluate(
+            xpath,
+            document,
+            null,
+            XPathResult.FIRST_ORDERED_NODE_TYPE,
+            null,
+          ).singleNodeValue as HTMLElement | null;
+
+          if (!firstElement) {
+            return null;
+          }
+
+          return {
+            tag: firstElement.tagName.toLowerCase(),
+            html: firstElement.outerHTML || firstElement.innerHTML || '',
+          };
+        }, { xpath });
+
+        if (!htmlPayload?.html) {
+          return { count: 0, items: null };
+        }
+
+        const markdown = formatHtmlFragment(
+          htmlPayload.html,
+          contentFormat,
+          page.url(),
+        );
+
+        if (!markdown) {
+          return { count: 0, items: null };
+        }
+
+        return {
+          count: 1,
+          items: {
+            basePath: xpath,
+            texts: [
+              {
+                xpath,
+                text: markdown,
+                tag: htmlPayload.tag,
+              },
+            ],
+            images: [],
+            links: [],
+          },
+        };
       }
 
       // 添加调试信息
@@ -470,6 +517,9 @@ export class TaskService {
       });
 
       this.logger.debug('Page info:', pageInfo);
+
+      const pageContentFormat =
+        contentFormat as 'text' | 'html' | 'markdown' | 'smart';
 
       const result = await page.evaluate(({ xpath, contentFormat }) => {
         // 浏览器端日志，保留用于调试
@@ -774,7 +824,7 @@ export class TaskService {
         }
 
         return null;
-      }, { xpath, contentFormat });
+      }, { xpath, contentFormat: pageContentFormat });
 
       if (!result) return { count: 0, items: null };
       return { count: 1, items: result };
@@ -942,7 +992,7 @@ export class TaskService {
     url: string,
     jsPath: string,
     waitSelector?: string,
-    contentFormat: 'text' | 'html' | 'markdown' = 'text',
+    contentFormat: 'text' | 'html' | 'markdown' | 'smart' = 'text',
   ): Promise<{ count: number; items: ParseResult | null }> {
     let browser: playwright.Browser | null = null;
 
@@ -957,15 +1007,6 @@ export class TaskService {
         await page
           .waitForSelector(waitSelector, { timeout: 10000 })
           .catch(() => null);
-      }
-
-      // 如果需要 markdown 转换，注入 turndown 库
-      if (contentFormat === 'markdown') {
-        await page.addScriptTag({
-          url: 'https://cdn.jsdelivr.net/npm/turndown@7.1.3/dist/turndown.js'
-        });
-        // 等待脚本加载
-        await page.waitForTimeout(500);
       }
 
       // 滚动触发懒加载
@@ -1022,6 +1063,43 @@ export class TaskService {
       }
 
       if (!elementHandle) return { count: 0, items: null };
+
+      if (contentFormat === 'markdown' || contentFormat === 'smart') {
+        const htmlPayload = await elementHandle.evaluate((root: HTMLElement) => ({
+          tag: root.tagName.toLowerCase(),
+          html: root.outerHTML || root.innerHTML || '',
+        }));
+
+        if (!htmlPayload?.html) {
+          return { count: 0, items: null };
+        }
+
+        const markdown = formatHtmlFragment(
+          htmlPayload.html,
+          contentFormat,
+          page.url(),
+        );
+
+        if (!markdown) {
+          return { count: 0, items: null };
+        }
+
+        return {
+          count: 1,
+          items: {
+            basePath: '',
+            texts: [
+              {
+                xpath: '',
+                text: markdown,
+                tag: htmlPayload.tag,
+              },
+            ],
+            images: [],
+            links: [],
+          },
+        };
+      }
 
       // 提取文本 / 图片 / 链接
       const result = await elementHandle.evaluate((root: HTMLElement, contentFormat: string) => {
@@ -1175,6 +1253,9 @@ export class TaskService {
     userId?: number,
   ) {
     let task;
+    const normalizedCustomConfig = customConfig
+      ? (sanitizeTaskConfig(customConfig) as CrawleeTaskConfig)
+      : undefined;
 
     if (taskId) {
       // 使用现有任务
@@ -1198,7 +1279,9 @@ export class TaskService {
       const newTask = this.taskRepository.create({
         name: taskName,
         url: url,
-        config: customConfig ? JSON.stringify(customConfig) : '{}',
+        config: normalizedCustomConfig
+          ? JSON.stringify(normalizedCustomConfig)
+          : '{}',
         status: 'pending',
         user: { id: userId } as any, // 设置用户关联
       });
@@ -1230,8 +1313,8 @@ export class TaskService {
     try {
       // 解析配置
       let config: CrawleeTaskConfig;
-      if (customConfig) {
-        config = customConfig;
+      if (normalizedCustomConfig) {
+        config = normalizedCustomConfig;
       } else if (task.config) {
         config = JSON.parse(task.config);
         // Normalize potential nested wrappers like { config: { ... } }
@@ -1252,6 +1335,8 @@ export class TaskService {
         config = { ...config, ...overrideConfig };
       }
 
+      config = sanitizeTaskConfig(config) as CrawleeTaskConfig;
+
       // 设置默认值 - 默认使用PlaywrightCrawler
       const defaultConfig: CrawleeTaskConfig = {
         crawlerType: 'playwright', // 默认为PlaywrightCrawler
@@ -1264,6 +1349,8 @@ export class TaskService {
         scrollDistance: 1000,
         scrollDelay: 1000,
         maxScrollDistance: 10000,
+        useCookie: false,
+        resultFilters: [],
       };
 
       config = { ...defaultConfig, ...config };
@@ -1618,6 +1705,23 @@ export class TaskService {
       const packageDir = path.dirname(packagePath);
       await fs.mkdir(packageDir, { recursive: true });
 
+      let taskConfig: Partial<CrawleeTaskConfig> = {};
+      if (execution.task.config) {
+        try {
+          taskConfig = sanitizeTaskConfig(
+            JSON.parse(execution.task.config),
+          ) as Partial<CrawleeTaskConfig>;
+        } catch (parseError) {
+          this.logger.warn(
+            `解析任务配置失败，打包下载将忽略 Cookie: ${
+              parseError instanceof Error
+                ? parseError.message
+                : String(parseError)
+            }`,
+          );
+        }
+      }
+
       // 调用打包服务
       await this.filePackageService.packageDataFromJson(
         results,
@@ -1625,6 +1729,14 @@ export class TaskService {
         packagePath,
         execution.task.id,
         executionId,
+        {
+          useCookie: Boolean(taskConfig.useCookie && taskConfig.cookieString),
+          cookieString: taskConfig.cookieString,
+          cookieDomain:
+            taskConfig.cookieDomain ||
+            getCookieMatchDomain(taskConfig, execution.task.url),
+          fallbackUrl: execution.task.url,
+        },
       );
 
       return packagePath;

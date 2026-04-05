@@ -34,13 +34,6 @@ export class CrawlerSettingsDto {
   @Min(1000)
   @Max(60000)
   waitForTimeout: number;
-
-  @IsBoolean()
-  enableProxy: boolean;
-
-  @IsOptional()
-  @IsString()
-  proxyUrl?: string;
 }
 
 export class StorageSettingsDto {
