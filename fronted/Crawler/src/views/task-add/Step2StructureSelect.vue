@@ -1,6 +1,5 @@
 <template>
-  <el-card class="mt-6 p-4 flex flex-col h-full">
-    <!-- loading -->
+  <el-card class="mt-6 flex h-full flex-col p-4">
     <div v-if="loading" class="text-center h-full">
       <svg
         class="mx-auto size-8 animate-spin text-indigo-600"
@@ -25,26 +24,22 @@
       <p class="mt-4">Loading...</p>
     </div>
 
-    <!-- 内容 -->
     <div v-else class="flex-1 overflow-auto space-y-6">
-      <!-- 配置方式选择 -->
       <div>
-        <h3 class="font-bold mb-3">选择配置方式</h3>
+        <h3 class="mb-3 font-bold">选择配置方式</h3>
         <el-radio-group v-model="configMode" size="large" class="mb-4">
           <el-radio-button value="auto">自动识别</el-radio-button>
-          <el-radio-button value="custom">自定义配置</el-radio-button>
+          <el-radio-button value="custom">手动输入 XPath</el-radio-button>
         </el-radio-group>
       </div>
 
-      <!-- 自动识别模式 -->
       <div v-if="configMode === 'auto'">
-        <div class="border rounded-lg p-4 bg-blue-50">
-          <h4 class="font-semibold mb-3 text-blue-800">自动识别列表项</h4>
+        <div class="rounded-lg border bg-blue-50 p-4">
+          <h4 class="mb-3 font-semibold text-blue-800">自动识别列表容器</h4>
 
-          <!-- 识别参数设置 -->
-          <div class="grid grid-cols-2 gap-4 mb-4" v-if="!autoRecognitionDone">
+          <div v-if="!autoRecognitionDone" class="mb-4 grid grid-cols-2 gap-4">
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">目标长宽比</label>
+              <label class="mb-1 block text-sm font-medium text-gray-700">目标宽高比</label>
               <el-input-number
                 v-model="targetAspectRatio"
                 :min="0.1"
@@ -57,7 +52,7 @@
               />
             </div>
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">允许误差</label>
+              <label class="mb-1 block text-sm font-medium text-gray-700">允许误差</label>
               <el-input-number
                 v-model="tolerance"
                 :min="0.01"
@@ -71,159 +66,127 @@
             </div>
           </div>
 
-          <!-- 开始识别按钮 -->
-          <div class="mb-4" v-if="!autoRecognitionDone">
+          <div v-if="!autoRecognitionDone" class="mb-4">
             <el-button
               type="primary"
               :loading="loading"
-              @click="startAutoRecognition"
               size="small"
+              @click="startAutoRecognition"
             >
               <el-icon class="mr-1"><Search /></el-icon>
               开始自动识别
             </el-button>
           </div>
 
-          <!-- 识别结果 -->
           <div v-if="autoRecognitionDone && listItems.length > 0">
-            <p class="text-sm text-gray-600 mb-3">找到 {{ listItems.length }} 个可能的列表项，请选择最合适的：</p>
-            <div class="grid grid-cols-2 md:grid-cols-3 gap-3 max-h-96 overflow-y-auto">
+            <p class="mb-3 text-sm text-gray-600">
+              找到 {{ listItems.length }} 个可能的列表容器，请选择最合适的一项。
+            </p>
+            <div class="grid max-h-96 grid-cols-2 gap-3 overflow-y-auto md:grid-cols-3">
               <el-card
                 v-for="(item, index) in listItems"
                 :key="index"
                 :class="[
                   'cursor-pointer transition-all duration-200 hover:shadow-md',
-                  selectedType === 'auto' && selectedIndex === index ? 'ring-2 ring-blue-500 bg-blue-50' : 'hover:bg-gray-50',
+                  selectedType === 'auto' && selectedIndex === index
+                    ? 'bg-blue-50 ring-2 ring-blue-500'
+                    : 'hover:bg-gray-50',
                 ]"
                 @click="selectAuto(index)"
               >
                 <template #header>
                   <div class="flex items-center justify-between">
-                    <span class="text-sm font-medium truncate flex-1">选项 {{ index + 1 }}</span>
+                    <span class="truncate text-sm font-medium">候选 {{ index + 1 }}</span>
                     <el-tag size="small" type="info">{{ item.matchCount }} 个</el-tag>
                   </div>
                 </template>
                 <div class="p-2">
                   <img
-                    :src="'data:image/png;base64,' + item.base64"
-                    class="w-full h-24 object-contain rounded border mb-2"
-                    alt="列表项预览"
+                    :src="`data:image/png;base64,${item.base64}`"
+                    class="mb-2 h-24 w-full rounded border object-contain"
+                    alt="列表预览"
                   />
-                  <p class="text-xs text-gray-500 truncate" :title="item.xpath">{{ item.xpath }}</p>
+                  <p class="truncate text-xs text-gray-500" :title="item.xpath">{{ item.xpath }}</p>
                 </div>
               </el-card>
             </div>
           </div>
 
-          <!-- 无识别结果 -->
-          <div v-else-if="autoRecognitionDone && listItems.length === 0" class="text-center py-8">
-            <el-icon size="48" class="text-gray-400 mb-2"><InfoFilled /></el-icon>
-            <p class="text-gray-600">未找到合适的列表项</p>
-            <p class="text-sm text-gray-500 mt-1">建议切换到自定义配置模式</p>
+          <div
+            v-else-if="autoRecognitionDone && listItems.length === 0"
+            class="py-8 text-center"
+          >
+            <el-icon size="48" class="mb-2 text-gray-400"><InfoFilled /></el-icon>
+            <p class="text-gray-600">未找到合适的列表容器</p>
+            <p class="mt-1 text-sm text-gray-500">建议切换到手动输入 XPath</p>
           </div>
 
-          <!-- 加载状态 -->
-          <div v-if="loading" class="text-center py-8">
-            <el-icon class="is-loading" style="font-size: 48px;"><Loading /></el-icon>
-            <p class="text-gray-600 mt-3">正在分析页面结构...</p>
+          <div v-if="loading" class="py-8 text-center">
+            <el-icon class="is-loading" style="font-size: 48px"><Loading /></el-icon>
+            <p class="mt-3 text-gray-600">正在分析页面结构...</p>
           </div>
         </div>
       </div>
 
-      <!-- 自定义配置模式 -->
       <div v-if="configMode === 'custom'">
-        <div class="border rounded-lg p-4 bg-green-50">
-          <h4 class="font-semibold mb-3 text-green-800">自定义配置</h4>
-          <p class="text-sm text-gray-600 mb-4">直接输入XPath或JSPath来指定要爬取的数据列表位置</p>
+        <div class="rounded-lg border bg-green-50 p-4">
+          <h4 class="mb-3 font-semibold text-green-800">手动输入 XPath</h4>
+          <p class="mb-4 text-sm text-gray-600">
+            系统已不再支持 JSPath。这里请直接填写列表容器的 XPath。
+          </p>
 
-          <div class="space-y-4">
-            <!-- XPath配置 -->
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-2">
-                XPath选择器
-                <el-tooltip content="使用XPath语法定位列表容器，例如：//div[@class='list'] | //ul[@class='items']" placement="top">
-                  <el-icon class="ml-1 text-gray-400 cursor-help"><InfoFilled /></el-icon>
-                </el-tooltip>
-              </label>
-              <el-input
-                v-model="customXpath"
-                placeholder="//div[@class='list'] | //ul[@class='items'] | //div[contains(@class, 'container')]"
-                clearable
-                size="small"
-                @focus="selectCustomXpath"
-              />
-              <p class="text-xs text-gray-500 mt-1">用于选择包含列表项的容器元素</p>
-            </div>
-
-            <!-- JSPath配置 -->
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-2">
-                JSPath选择器
-                <el-tooltip content="使用JavaScript代码定位列表容器，例如：document.querySelector('.content')" placement="top">
-                  <el-icon class="ml-1 text-gray-400 cursor-help"><InfoFilled /></el-icon>
-                </el-tooltip>
-              </label>
-              <el-input
-                v-model="customJsPath"
-                placeholder="document.querySelector('.main-content') | document.getElementById('list-container')"
-                clearable
-                size="small"
-                @focus="selectCustomJsPath"
-              />
-              <p class="text-xs text-gray-500 mt-1">适用于复杂DOM结构或动态内容</p>
-            </div>
-
-            <!-- 配置提示 -->
-            <el-alert
-              title="配置说明"
-              type="info"
-              :closable="false"
-              show-icon
-              class="mt-4"
-            >
-              <template #description>
-                <ul class="text-sm space-y-1">
-                  <li>• XPath和JSPath只需填写其中之一</li>
-                  <li>• 选择器应指向包含多个相似项的容器元素</li>
-                  <li>• 可以使用浏览器的开发者工具获取准确的选择器</li>
-                  <li>• 选择器将用于后续字段映射步骤</li>
-                </ul>
-              </template>
-            </el-alert>
+          <div>
+            <label class="mb-2 block text-sm font-medium text-gray-700">
+              XPath 选择器
+              <el-tooltip
+                content="用于定位包含多条列表项的容器，例如 //div[@class='list'] 或 //ul[@class='items']"
+                placement="top"
+              >
+                <el-icon class="ml-1 cursor-help text-gray-400"><InfoFilled /></el-icon>
+              </el-tooltip>
+            </label>
+            <el-input
+              v-model="customXpath"
+              placeholder="//div[@class='list'] | //ul[@class='items'] | //section[contains(@class, 'feed')]"
+              clearable
+              size="small"
+              @focus="selectCustomXpath"
+            />
+            <p class="mt-1 text-xs text-gray-500">
+              这个 XPath 应指向包含多条相似内容项的列表容器。
+            </p>
           </div>
+
+          <el-alert
+            title="填写说明"
+            type="info"
+            :closable="false"
+            show-icon
+            class="mt-4"
+          >
+            <template #description>
+              <ul class="space-y-1 text-sm">
+                <li>只需要填写 XPath，不再需要 JSPath。</li>
+                <li>选择器尽量命中重复的列表项区域，不要指向整页根节点。</li>
+                <li>这个选择器会作为下一步字段识别和映射的基础范围。</li>
+              </ul>
+            </template>
+          </el-alert>
         </div>
       </div>
 
-      <!-- 当前选择状态 -->
-      <div v-if="store.selectedItem && (store.selectedItem.xpath || store.selectedItem.jsPath)" class="border-t pt-4">
-        <h5 class="font-medium text-gray-800 mb-2">当前配置</h5>
-        <div class="bg-gray-50 rounded p-3">
-          <div class="text-sm">
-            <span v-if="selectedType === 'auto' && store.selectedItem.xpath" class="text-blue-600">
-              <el-icon class="mr-1"><Check /></el-icon>
-              自动识别: {{ store.selectedItem.xpath }}
-            </span>
-            <span v-else-if="store.selectedItem.xpath" class="text-green-600">
-              <el-icon class="mr-1"><Check /></el-icon>
-              XPath: {{ store.selectedItem.xpath }}
-            </span>
-            <span v-else-if="store.selectedItem.jsPath" class="text-purple-600">
-              <el-icon class="mr-1"><Check /></el-icon>
-              JSPath: {{ store.selectedItem.jsPath }}
-            </span>
-          </div>
+      <div v-if="currentSelector" class="border-t pt-4">
+        <h5 class="mb-2 font-medium text-gray-800">当前配置</h5>
+        <div class="rounded bg-gray-50 p-3 text-sm text-green-600">
+          <el-icon class="mr-1"><Check /></el-icon>
+          XPath: {{ currentSelector }}
         </div>
       </div>
     </div>
 
-    <!-- 底部按钮 -->
     <div class="mt-4 flex justify-end gap-2">
       <el-button @click="prevStep">上一步</el-button>
-      <el-button
-        type="primary"
-        :disabled="!store.selectedItem"
-        @click="nextStep"
-      >
+      <el-button type="primary" :disabled="!currentSelector" @click="nextStep">
         下一步
       </el-button>
     </div>
@@ -231,12 +194,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, watch } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { listPreviewApi } from "@/api/task";
-import { useTaskFormStore } from "@/stores/taskForm";
-import { ElMessageBox, ElMessage } from "element-plus";
-import { Search, Check, InfoFilled, Loading } from "@element-plus/icons-vue";
+import { buildTaskCookiePayload, useTaskFormStore } from "@/stores/taskForm";
+import { ElMessage } from "element-plus";
+import { Check, InfoFilled, Loading, Search } from "@element-plus/icons-vue";
 
 interface ListItem {
   xpath: string;
@@ -251,20 +214,21 @@ const store = useTaskFormStore();
 const loading = ref(false);
 const listItems = reactive<ListItem[]>([]);
 const selectedIndex = ref(-1);
-const selectedType = ref<"auto" | "customXpath" | "customJsPath" | null>(null);
+const selectedType = ref<"auto" | "custom" | null>(null);
 const customXpath = ref("");
-const customJsPath = ref("");
 
-// 配置模式相关
-const configMode = ref<'auto' | 'custom'>('custom'); // 默认使用自定义配置
+const configMode = ref<"auto" | "custom">("custom");
 const autoRecognitionDone = ref(false);
 const targetAspectRatio = ref(1.0);
 const tolerance = ref(0.3);
 
-// 开始自动识别
+const currentSelector = computed(
+  () => String(store.selectedItem?.xpath || store.selectedItem?.jsPath || "").trim(),
+);
+
 async function startAutoRecognition() {
   if (!store.form.url) {
-    ElMessage.error("页面URL不能为空");
+    ElMessage.error("页面 URL 不能为空");
     return;
   }
 
@@ -274,6 +238,7 @@ async function startAutoRecognition() {
       url: store.form.url,
       targetAspectRatio: targetAspectRatio.value,
       tolerance: tolerance.value,
+      ...buildTaskCookiePayload(store.crawlerConfig),
     });
 
     listItems.splice(0, listItems.length, ...res);
@@ -281,90 +246,86 @@ async function startAutoRecognition() {
     selectedIndex.value = -1;
 
     if (res.length === 0) {
-      ElMessage.warning("未找到合适的列表项，请调整参数或使用自定义配置");
-    } else {
-      ElMessage.success(`找到 ${res.length} 个可能的列表项`);
+      ElMessage.warning("未找到合适的列表容器，请调整参数或改为手动输入 XPath");
+      return;
     }
+
+    ElMessage.success(`找到 ${res.length} 个可能的列表容器`);
   } catch (error) {
-    ElMessage.error("自动识别失败，请检查参数设置");
+    ElMessage.error(error instanceof Error ? error.message : "自动识别失败，请检查页面地址或稍后重试");
     console.error("Auto recognition error:", error);
   } finally {
     loading.value = false;
   }
 }
 
-/* 选自动 */
 function selectAuto(index: number) {
+  const currentItem = listItems[index];
+  if (!currentItem) {
+    return;
+  }
+
   selectedIndex.value = index;
   selectedType.value = "auto";
   customXpath.value = "";
-  customJsPath.value = "";
   store.selectedItem = {
-    xpath: listItems[index]!.xpath,
-    base64: listItems[index]!.base64,
+    xpath: currentItem.xpath,
+    base64: currentItem.base64,
     jsPath: undefined,
   };
 }
 
-/* 选自定义 XPath */
 function selectCustomXpath() {
   selectedIndex.value = -1;
-  selectedType.value = "customXpath";
-  customJsPath.value = "";
-  store.selectedItem = {
-    xpath: customXpath.value || "",
-    base64: "",
-    jsPath: undefined,
-  };
-}
-
-/* 选自定义 JSPath */
-function selectCustomJsPath() {
-  selectedIndex.value = -1;
-  selectedType.value = "customJsPath";
-  customXpath.value = "";
-  store.selectedItem = {
-    xpath: "",
-    base64: "",
-    jsPath: customJsPath.value || "",
-  };
-}
-
-// watch 保持独立更新
-watch(customXpath, (val) => {
-  if (val) {
-    selectedType.value = "customXpath";
-    customJsPath.value = "";
+  selectedType.value = "custom";
+  if (!store.selectedItem) {
+    store.selectedItem = {
+      xpath: customXpath.value || "",
+      base64: "",
+      jsPath: undefined,
+    };
+    return;
   }
-  if (selectedType.value === "customXpath" && store.selectedItem) {
-    store.selectedItem.xpath = val;
+
+  store.selectedItem.xpath = customXpath.value || "";
+  store.selectedItem.base64 = "";
+  store.selectedItem.jsPath = undefined;
+}
+
+watch(customXpath, (value) => {
+  if (value) {
+    selectedType.value = "custom";
+    selectedIndex.value = -1;
+  }
+
+  if (!store.selectedItem && value) {
+    store.selectedItem = {
+      xpath: value,
+      base64: "",
+      jsPath: undefined,
+    };
+    return;
+  }
+
+  if (selectedType.value === "custom" && store.selectedItem) {
+    store.selectedItem.xpath = value;
+    store.selectedItem.base64 = "";
     store.selectedItem.jsPath = undefined;
   }
 });
 
-watch(customJsPath, (val) => {
-  if (val) {
-    selectedType.value = "customJsPath";
+watch(configMode, (mode) => {
+  if (mode === "auto") {
     customXpath.value = "";
-  }
-  if (selectedType.value === "customJsPath" && store.selectedItem) {
-    store.selectedItem.jsPath = val;
-    store.selectedItem.xpath = "";
-  }
-});
-
-// 配置模式切换时重置状态
-watch(configMode, (newMode) => {
-  if (newMode === 'auto') {
-    customXpath.value = "";
-    customJsPath.value = "";
     selectedType.value = null;
+    selectedIndex.value = -1;
     store.selectedItem = null;
     autoRecognitionDone.value = false;
     listItems.length = 0;
-  } else {
-    selectedIndex.value = -1;
+    return;
   }
+
+  selectedIndex.value = -1;
 });
 
 function prevStep() {
@@ -375,10 +336,11 @@ function nextStep() {
   router.push("/crawleer/task-add/mapping");
 }
 
-// 初始化时不强制执行自动识别，让用户选择配置方式
 onMounted(() => {
-  if (!store.form.url) {
-    loading.value = false;
+  const restoredSelector = String(store.selectedItem?.xpath || "").trim();
+  if (restoredSelector) {
+    customXpath.value = restoredSelector;
+    selectedType.value = "custom";
   }
 });
 </script>

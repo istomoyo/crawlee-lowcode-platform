@@ -1,51 +1,48 @@
 import {
-  Injectable,
   BadRequestException,
-  UnauthorizedException,
   Inject,
+  Injectable,
+  UnauthorizedException,
 } from '@nestjs/common';
-import { Repository, Like } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
-import { User } from './entities/user.entity';
-import { CreateUserDto } from './dto/create-user.dto';
-import { LoginUserDto } from './dto/login-user.dto';
 import { JwtService } from '@nestjs/jwt';
+import { plainToInstance } from 'class-transformer';
 import * as bcrypt from 'bcryptjs';
 import Redis from 'ioredis';
-import { plainToInstance } from 'class-transformer';
-import { UserResponseDto } from './dto/user-response.dto';
-import { MailService } from '../mail/mail.service'; // 导入 MailService
-import { UpdateUserDto } from './dto/update-user.dto';
-import { ChangePasswordDto } from './dto/change-password.dto';
-import { UserRole } from './entities/user-role.enum';
-import * as svgCaptcha from 'svg-captcha';
-import { Response } from 'express'; // 导入 Response 类型
+import { Response } from 'express';
 import * as fs from 'fs';
+import { Repository, Like } from 'typeorm';
 import * as path from 'path';
+import { randomBytes, randomInt } from 'crypto';
+import * as svgCaptcha from 'svg-captcha';
+import { resolveAuthCookieConfig } from '../config/runtime-security';
+import { MailService } from '../mail/mail.service';
+import { ChangePasswordDto } from './dto/change-password.dto';
+import { CreateUserDto } from './dto/create-user.dto';
+import { LoginUserDto } from './dto/login-user.dto';
+import { UpdateUserDto } from './dto/update-user.dto';
+import { UserResponseDto } from './dto/user-response.dto';
+import { User } from './entities/user.entity';
+import { UserRole } from './entities/user-role.enum';
 
 @Injectable()
 export class UserService {
+  private static readonly LEGACY_AUTH_COOKIE_PATH = '/api';
+  private readonly authCookieConfig = resolveAuthCookieConfig();
+
   constructor(
     @InjectRepository(User)
     private userRepo: Repository<User>,
-
     private jwt: JwtService,
-
-    private mailService: MailService, // 注入 MailService
-
+    private mailService: MailService,
     @Inject('REDIS_CLIENT')
     private redis: Redis,
   ) {}
 
-  /**
-   * 注册
-   */
-  // 注册
   async register(dto: CreateUserDto & { code: string }) {
     const exist = await this.userRepo.findOne({ where: { email: dto.email } });
     if (exist) throw new BadRequestException('邮箱已被注册');
 
-    // 校验验证码
     const redisCode = await this.redis.get(`user:verify:${dto.email}`);
     if (!redisCode) throw new BadRequestException('验证码已过期');
     if (redisCode !== dto.code) throw new BadRequestException('验证码错误');
@@ -61,19 +58,13 @@ export class UserService {
     });
 
     const savedUser = await this.userRepo.save(user);
-
-    // 删除 Redis 验证码
     await this.redis.del(`user:verify:${dto.email}`);
 
-    // 返回脱敏用户
     return plainToInstance(UserResponseDto, savedUser, {
       excludeExtraneousValues: true,
     });
   }
 
-  /**
-   * 登录（生成 JWT + 单设备登录）
-   */
   async login(dto: LoginUserDto, res: Response) {
     const user = await this.userRepo.findOne({ where: { email: dto.email } });
     if (!user) throw new UnauthorizedException('邮箱或密码错误');
@@ -81,18 +72,20 @@ export class UserService {
     const ok = await bcrypt.compare(dto.password, user.password);
     if (!ok) throw new UnauthorizedException('邮箱或密码错误');
 
-    // 更新最后登录时间
     user.lastLoginAt = new Date();
     await this.userRepo.save(user);
 
     const loginToken = this.generateToken();
+    const expiresInSeconds = Math.max(
+      60,
+      Number(process.env.JWT_EXPIRES_IN ?? 86400) || 86400,
+    );
 
-    // Redis 单设备登录
     await this.redis.set(
       `user:token:${user.id}`,
       loginToken,
       'EX',
-      24 * 60 * 60,
+      expiresInSeconds,
     );
 
     const payload = {
@@ -103,28 +96,52 @@ export class UserService {
     };
     const token = this.jwt.sign(payload);
 
-    // 写入 HttpOnly cookie
-    res.cookie('token', token, {
+    this.clearLegacyAuthCookie(res);
+    res.cookie(this.authCookieConfig.name, token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 24 * 60 * 60 * 1000, // 1 天
-      sameSite: 'lax', // 可按需修改
+      secure: this.authCookieConfig.secure,
+      sameSite: this.authCookieConfig.sameSite,
+      path: this.authCookieConfig.path,
+      domain: this.authCookieConfig.domain,
+      maxAge: expiresInSeconds * 1000,
     });
 
     const userDto = plainToInstance(UserResponseDto, user, {
       excludeExtraneousValues: true,
     });
 
-    return { user: userDto }; // ✅ 不返回 token
+    return { user: userDto };
   }
 
-  async logout(userId: number) {
+  async logout(userId: number, res: Response) {
     await this.redis.del(`user:token:${userId}`);
+    res.clearCookie(this.authCookieConfig.name, {
+      httpOnly: true,
+      secure: this.authCookieConfig.secure,
+      sameSite: this.authCookieConfig.sameSite,
+      path: this.authCookieConfig.path,
+      domain: this.authCookieConfig.domain,
+    });
+    this.clearLegacyAuthCookie(res);
     return true;
   }
 
   private generateToken() {
-    return Math.random().toString(36).slice(2) + Date.now();
+    return randomBytes(32).toString('hex');
+  }
+
+  private clearLegacyAuthCookie(res: Response) {
+    if (this.authCookieConfig.path === UserService.LEGACY_AUTH_COOKIE_PATH) {
+      return;
+    }
+
+    res.clearCookie(this.authCookieConfig.name, {
+      httpOnly: true,
+      secure: this.authCookieConfig.secure,
+      sameSite: this.authCookieConfig.sameSite,
+      path: UserService.LEGACY_AUTH_COOKIE_PATH,
+      domain: this.authCookieConfig.domain,
+    });
   }
 
   async getProfile(userId: number) {
@@ -143,7 +160,6 @@ export class UserService {
     });
   }
 
-  // user.service.ts
   async changePassword(userId: number, dto: ChangePasswordDto) {
     const user = await this.userRepo.findOne({ where: { id: userId } });
     if (!user) throw new BadRequestException('用户不存在');
@@ -187,9 +203,6 @@ export class UserService {
     });
   }
 
-  /**
-   * 获取用户列表（管理员可用）
-   */
   async getAllUsers(params: { page: number; limit: number; search?: string }) {
     const { page, limit, search } = params;
 
@@ -210,9 +223,6 @@ export class UserService {
     };
   }
 
-  /**
-   * 生成图片验证码
-   */
   async createCaptcha() {
     const captcha = svgCaptcha.create({
       size: 4,
@@ -223,8 +233,6 @@ export class UserService {
     });
 
     const captchaId = `captcha:${Date.now()}`;
-
-    // 存 Redis，3 分钟有效
     await this.redis.set(captchaId, captcha.text.toLowerCase(), 'EX', 180);
 
     return {
@@ -234,7 +242,6 @@ export class UserService {
   }
 
   async sendVerifyCode(email: string, captchaId: string, captchaText: string) {
-    // 校验图片验证码
     const savedCaptcha = await this.redis.get(captchaId);
     if (!savedCaptcha) throw new BadRequestException('图片验证码已过期');
 
@@ -242,18 +249,15 @@ export class UserService {
       throw new BadRequestException('图片验证码错误');
     }
 
-    // 图片验证码验证通过，删除
     await this.redis.del(captchaId);
 
-    // 生成6位验证码
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-
+    const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
     await this.redis.set(`user:verify:${email}`, code, 'EX', 5 * 60);
 
     await this.mailService.sendMail(
       email,
       '注册验证码',
-      `您的验证码是：${code}，5分钟内有效`,
+      `您的验证码是：${code}，5 分钟内有效。`,
     );
 
     return true;

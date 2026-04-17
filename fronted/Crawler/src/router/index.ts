@@ -1,62 +1,75 @@
 import { createRouter, createWebHistory } from "vue-router";
 import type { RouteRecordRaw } from "vue-router";
 import { useUserStore } from "@/stores/user";
-import NotFound from "@/views/NotFound.vue";
 import BaseLayout from "@/layouts/BaseLayout.vue";
+import NotFound from "@/views/NotFound.vue";
 
-const routes: Array<RouteRecordRaw> = [
+const routes: RouteRecordRaw[] = [
   {
     path: "/login",
     name: "login",
     component: () => import("@/views/Login.vue"),
+    meta: { title: "登录" },
   },
   {
     path: "/",
     component: BaseLayout,
-    redirect: "/crawleer/task-list",
+    redirect: "/crawleer/workspace",
     children: [
+      {
+        path: "crawleer/workspace",
+        name: "workspace",
+        component: () => import("@/views/WorkspaceOverview.vue"),
+        meta: { title: "工作台" },
+      },
       {
         path: "crawleer/task-list",
         name: "task-list",
         component: () => import("@/views/TaskList.vue"),
+        meta: { title: "任务列表" },
+      },
+      {
+        path: "crawleer/templates",
+        name: "task-templates",
+        component: () => import("@/views/TaskTemplates.vue"),
+        meta: { title: "模板中心" },
       },
       {
         path: "crawleer/statistics",
         name: "statistics",
         component: () => import("@/views/Statistics.vue"),
+        meta: { title: "统计分析" },
       },
       {
         path: "crawleer/task-add",
         name: "task-add",
         component: () => import("@/views/task-add/TaskAdd.vue"),
-        meta: { keepAlive: true },
+        meta: { title: "新建任务", keepAlive: true },
         children: [
           {
             path: "basic",
             component: () => import("@/views/task-add/Step1BasicInfo.vue"),
-            meta: { keepAlive: true },
+            meta: { title: "基础信息", keepAlive: true },
           },
           {
             path: "structure",
-            component: () =>
-              import("@/views/task-add/Step2StructureSelect.vue"),
-            meta: { keepAlive: true },
+            component: () => import("@/views/task-add/Step2StructureSelect.vue"),
+            meta: { title: "结构选择", keepAlive: true },
           },
           {
             path: "mapping",
             component: () => import("@/views/task-add/Step3FieldMapping.vue"),
-            meta: { keepAlive: true },
+            meta: { title: "字段映射", keepAlive: true },
+          },
+          {
+            path: "config",
+            component: () => import("@/views/task-add/Step4Config.vue"),
+            meta: { title: "执行配置", keepAlive: true },
           },
           {
             path: "preview",
             component: () => import("@/views/task-add/Step5Preview.vue"),
-            meta: { keepAlive: true },
-          },
-
-          {
-            path: "config",
-            component: () => import("@/views/task-add/Step4Config.vue"),
-            meta: { keepAlive: true },
+            meta: { title: "执行预览", keepAlive: true },
           },
         ],
       },
@@ -64,31 +77,37 @@ const routes: Array<RouteRecordRaw> = [
         path: "admin/users",
         name: "admin-users",
         component: () => import("@/views/admin/UserManagement.vue"),
-        meta: { keepAlive: true },
+        meta: { title: "用户管理", keepAlive: true, adminOnly: true },
       },
       {
         path: "admin/tasks",
         name: "admin-tasks",
         component: () => import("@/views/admin/TaskMonitoring.vue"),
-        meta: { keepAlive: true },
+        meta: { title: "任务监控", keepAlive: true, adminOnly: true },
       },
       {
         path: "admin/logs",
         name: "admin-logs",
         component: () => import("@/views/admin/SystemLogs.vue"),
-        meta: { keepAlive: true },
+        meta: { title: "系统日志", keepAlive: true, adminOnly: true },
       },
       {
         path: "admin/settings",
         name: "admin-settings",
         component: () => import("@/views/admin/SystemSettings.vue"),
-        meta: { keepAlive: true },
+        meta: { title: "系统设置", keepAlive: true, adminOnly: true },
       },
       {
         path: "account/profile",
         name: "user-profile",
         component: () => import("@/views/UserProfile.vue"),
-        meta: { keepAlive: true },
+        meta: { title: "个人资料", keepAlive: true },
+      },
+      {
+        path: "account/cookies",
+        name: "cookie-credentials",
+        component: () => import("@/views/CookieCredentials.vue"),
+        meta: { title: "Cookie 凭证", keepAlive: true },
       },
     ],
   },
@@ -96,6 +115,7 @@ const routes: Array<RouteRecordRaw> = [
     path: "/:pathMatch(.*)*",
     name: "not-found",
     component: NotFound,
+    meta: { title: "页面不存在" },
   },
 ];
 
@@ -105,35 +125,32 @@ const router = createRouter({
 });
 
 router.beforeEach(async (to) => {
-  const store = useUserStore();
+  const userStore = useUserStore();
 
-  // 如果用户状态未初始化，尝试初始化
-  if (!store.checked) {
-    await store.init();
+  if (!userStore.checked) {
+    await userStore.init();
   }
-  console.log("store.user :>> ", store.user);
-  const isLogin = !!store.user;
 
-  // 如果访问登录页
+  const isLoggedIn = Boolean(userStore.user);
+
   if (to.path === "/login") {
-    // 如果已登录，跳转到首页
-    return isLogin ? { path: "/" } : true;
+    return isLoggedIn ? { path: "/" } : true;
   }
 
-  // 如果未登录，跳转到登录页
-  if (!isLogin) {
+  if (!isLoggedIn) {
     return { path: "/login" };
   }
 
-  // 检查管理员权限
-  const adminRoutes = ['/admin/users', '/admin/tasks', '/admin/logs', '/admin/settings'];
-  const isAdminRoute = adminRoutes.some(route => to.path.startsWith(route));
-  if (isAdminRoute && store.user?.role !== 'admin') {
-    // 非管理员访问管理员页面，重定向到首页
+  if (to.meta.adminOnly && userStore.user?.role !== "admin") {
     return { path: "/" };
   }
 
   return true;
+});
+
+router.afterEach((to) => {
+  const routeTitle = String(to.meta.title || "Crawlee Workspace");
+  document.title = `${routeTitle} | Crawlee Workspace`;
 });
 
 export default router;

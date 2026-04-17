@@ -10,7 +10,6 @@ const REMOVABLE_SELECTOR = [
   'template',
   'iframe',
   'canvas',
-  'form',
   'button',
   'input',
   'select',
@@ -37,6 +36,27 @@ const REMOVABLE_SELECTOR = [
   '.sidebar',
   '.popup',
   '.modal',
+] as const;
+
+const UNWRAP_SELECTOR = ['form'] as const;
+const NOISE_SELECTOR = [
+  '#share-2',
+  '[id^="share-"]',
+  '[id^="share_"]',
+  '[class*="share-"]',
+  '.articleAuthor',
+  '.articleAuthor2',
+  '.dtl_page',
+  '.prev-next',
+  '.post-nav',
+  '.article-nav',
+] as const;
+const DECORATIVE_MEDIA_SELECTOR = [
+  '.dtl_tit .cont img',
+  '.article-meta img',
+  '.meta img',
+  '.articleAuthor img',
+  '.dtl_page img',
 ] as const;
 
 const PRIORITY_SELECTOR = [
@@ -219,7 +239,22 @@ function absolutizeAssetUrls(document: Document, pageUrl?: string) {
 }
 
 function removeUnwantedNodes(root: ParentNode) {
+  root.querySelectorAll<HTMLElement>(UNWRAP_SELECTOR.join(',')).forEach((node) => {
+    while (node.firstChild) {
+      node.parentNode?.insertBefore(node.firstChild, node);
+    }
+    node.remove();
+  });
+
   root.querySelectorAll(REMOVABLE_SELECTOR.join(',')).forEach((node) => {
+    node.remove();
+  });
+
+  root.querySelectorAll(NOISE_SELECTOR.join(',')).forEach((node) => {
+    node.remove();
+  });
+
+  root.querySelectorAll(DECORATIVE_MEDIA_SELECTOR.join(',')).forEach((node) => {
     node.remove();
   });
 }
@@ -245,12 +280,32 @@ function pruneEmptyNodes(root: HTMLElement) {
 
 function dropLikelyBoilerplate(root: HTMLElement) {
   root.querySelectorAll<HTMLElement>(CANDIDATE_SELECTOR.join(',')).forEach((el) => {
+    if (shouldPreserveCandidate(el)) {
+      return;
+    }
+
     const score = scoreElement(el);
     const textLength = normalizeText(el.textContent || '').length;
     if (textLength > 0 && score < 20) {
       el.remove();
     }
   });
+}
+
+function shouldPreserveCandidate(element: HTMLElement): boolean {
+  const textLength = normalizeText(element.textContent || '').length;
+  const className = `${element.className} ${element.id}`;
+  const paragraphCount = element.querySelectorAll('p').length;
+  const headingCount = element.querySelectorAll('h1,h2,h3,h4,h5,h6').length;
+  const mediaCount = element.querySelectorAll('img,video,picture,figure').length;
+
+  return (
+    /article|content|entry|post|story|body|markdown|rich/i.test(className) ||
+    headingCount > 0 ||
+    paragraphCount >= 2 ||
+    mediaCount > 0 ||
+    textLength >= 120
+  );
 }
 
 function isArticleLike(root: HTMLElement): boolean {

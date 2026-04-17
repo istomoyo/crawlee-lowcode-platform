@@ -1,47 +1,45 @@
 import {
+  Body,
   Controller,
+  Delete,
   Get,
+  HttpStatus,
+  Param,
+  ParseIntPipe,
   Post,
   Put,
-  Delete,
-  Body,
-  Param,
   Query,
-  ParseIntPipe,
   UseGuards,
-  HttpStatus,
 } from '@nestjs/common';
-import { AdminService } from './admin.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { RolesGuard } from '../auth/roles.guard';
 import { UserRole } from '../user/entities/user-role.enum';
+import { AdminService } from './admin.service';
 import {
-  GetUsersDto,
-  CreateUserDto,
-  UpdateUserDto,
-  UserListResponseDto,
-} from './dto/user-management.dto';
-import {
-  GetTasksDto,
-  TaskMonitoringListResponseDto,
-} from './dto/task-monitoring.dto';
+  SystemInfoDto,
+  SystemSettingsDto,
+} from './dto/system-settings.dto';
 import {
   GetLogsDto,
   LogListResponseDto,
 } from './dto/system-logs.dto';
 import {
-  SystemSettingsDto,
-  SystemInfoDto,
-} from './dto/system-settings.dto';
+  GetTasksDto,
+  TaskMonitoringListResponseDto,
+} from './dto/task-monitoring.dto';
+import {
+  CreateUserDto,
+  GetUsersDto,
+  UpdateUserDto,
+  UserListResponseDto,
+} from './dto/user-management.dto';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(UserRole.ADMIN)
 export class AdminController {
   constructor(private readonly adminService: AdminService) {}
-
-  // ==================== 用户管理 ====================
 
   @Get('users')
   async getUsers(@Query() query: GetUsersDto): Promise<UserListResponseDto> {
@@ -90,8 +88,6 @@ export class AdminController {
     };
   }
 
-  // ==================== 任务监控 ====================
-
   @Get('tasks')
   async getTasks(@Query() query: GetTasksDto): Promise<TaskMonitoringListResponseDto> {
     return this.adminService.getTasks(query);
@@ -102,11 +98,9 @@ export class AdminController {
     await this.adminService.stopTask(taskId);
     return {
       statusCode: HttpStatus.OK,
-      message: '任务已停止',
+      message: '已发送停止请求',
     };
   }
-
-  // ==================== 系统日志 ====================
 
   @Get('logs')
   async getLogs(@Query() query: GetLogsDto): Promise<LogListResponseDto> {
@@ -121,8 +115,6 @@ export class AdminController {
       message: '日志清空成功',
     };
   }
-
-  // ==================== 系统设置 ====================
 
   @Get('settings')
   async getSystemSettings(): Promise<SystemSettingsDto> {

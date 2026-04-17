@@ -50,12 +50,19 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from "vue";
 import { useRouter } from "vue-router";
-import { useTaskFormStore } from "@/stores/taskForm";
+import { buildTaskCookiePayload, useTaskFormStore } from "@/stores/taskForm";
 import { ElMessage } from "element-plus";
 import { executeTaskApi } from "@/api/task";
+import { useCookieCredentials } from "@/composables/useCookieCredentials";
+import {
+  findCookieCredentialById,
+  getCookieCredentialStatusMeta,
+  isCookieCredentialUsable,
+} from "@/utils/cookie-credential";
 
 const store = useTaskFormStore();
 const router = useRouter();
+const { credentials, fetchCookieCredentials } = useCookieCredentials();
 
 // JSON 编辑状态
 const editableJson = ref("");
@@ -64,7 +71,9 @@ const isValidJson = ref(false);
 
 // 生成最终配置
 const prettyJson = computed(() => {
-  const crawleeConfig = store.buildConfig();
+  const crawleeConfig = store.buildConfig({
+    includeTemporaryCookieString: false,
+  });
 
   // 合并额外配置
   const finalConfig = {
@@ -122,7 +131,42 @@ onMounted(() => {
   if (!editableJson.value || editableJson.value.trim() === '') {
     generateFromSteps();
   }
+
+  if (
+    store.crawlerConfig.useCookie &&
+    store.crawlerConfig.cookieMode === "credential"
+  ) {
+    void ensureCookieCredentialsLoaded();
+  }
 });
+
+async function ensureCookieCredentialsLoaded(force = false) {
+  try {
+    await fetchCookieCredentials(force);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "加载 Cookie 凭证失败");
+    throw error;
+  }
+}
+
+function validateCookieCredential(config: Record<string, any>) {
+  const selectedCredential = findCookieCredentialById(
+    credentials.value,
+    config.cookieCredentialId,
+  );
+
+  if (!selectedCredential) {
+    ElMessage.error("所选 Cookie 凭证不存在，请重新选择");
+    return false;
+  }
+
+  if (!isCookieCredentialUsable(selectedCredential)) {
+    ElMessage.error(getCookieCredentialStatusMeta(selectedCredential).message);
+    return false;
+  }
+
+  return true;
+}
 
 // 验证 JSON 格式
 const validateJsonFormat = () => {
@@ -227,10 +271,40 @@ async function runCrawler() {
     }
 
     // 调用封装的API方法
+    if (
+      config.useCookie &&
+      Number.isInteger(Number(config.cookieCredentialId)) &&
+      Number(config.cookieCredentialId) > 0
+    ) {
+      await ensureCookieCredentialsLoaded();
+      if (!validateCookieCredential(config)) {
+        return;
+      }
+    }
+
+    const temporaryCookieOverride = buildTaskCookiePayload(store.crawlerConfig, {
+      includeTemporaryCookieString: true,
+    });
+    const hasExplicitCookieConfig = Boolean(
+      config.useCookie &&
+        (String(config.cookieString ?? "").trim() ||
+          (Number.isInteger(Number(config.cookieCredentialId)) &&
+            Number(config.cookieCredentialId) > 0)),
+    );
+    const shouldUseDraftTemporaryCookie = Boolean(
+      store.crawlerConfig.useCookie &&
+        store.crawlerConfig.cookieMode === "temporary" &&
+        temporaryCookieOverride.cookieString &&
+        !hasExplicitCookieConfig,
+    );
+
     const result = await executeTaskApi({
       taskName: config.name,
       url: config.url,
       config: config,
+      overrideConfig: shouldUseDraftTemporaryCookie
+        ? temporaryCookieOverride
+        : undefined,
     });
 
     ElMessage.success(`任务已提交！执行ID: ${result.executionId}`);

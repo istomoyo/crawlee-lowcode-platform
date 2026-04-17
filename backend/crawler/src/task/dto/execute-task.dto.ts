@@ -29,10 +29,12 @@ export interface TaskNotificationConfig {
   previewCount?: number;
 }
 
+export type TaskMode = 'simple' | 'behavior';
+
 export interface PreActionConfig {
-  type: 'click' | 'wait_for_selector' | 'wait_for_timeout';
-  selectorType?: 'xpath' | 'css';
+  type: 'click' | 'type' | 'wait_for_selector' | 'wait_for_timeout';
   selector?: string;
+  value?: string;
   timeout?: number;
 }
 
@@ -44,6 +46,16 @@ export interface SelectorConfig {
   parentLink?: string;
   detailBaseSelector?: string;
   customTransformCode?: string;
+  preActions?: PreActionConfig[];
+}
+
+export interface NestedSelectorConfig {
+  name: string;
+  selector: string;
+  type: 'text' | 'link' | 'image';
+  contentFormat?: 'text' | 'html' | 'markdown' | 'smart';
+  customTransformCode?: string;
+  preActions?: PreActionConfig[];
 }
 
 export interface NestedExtractContext {
@@ -52,12 +64,70 @@ export interface NestedExtractContext {
   listOutputKey?: string;
   scroll?: { maxScroll: number; waitTime: number; maxItems: number };
   next?: { selector: string; maxPages: number };
-  selectors: SelectorConfig[];
+  selectors: NestedSelectorConfig[];
   maxDepth?: number;
   preActions?: PreActionConfig[];
 }
 
+export type BehaviorStepType =
+  | 'open'
+  | 'click'
+  | 'type'
+  | 'wait'
+  | 'extract'
+  | 'scroll'
+  | 'loop'
+  | 'condition'
+  | 'customJS';
+
+export type BehaviorExtractType =
+  | 'text'
+  | 'html'
+  | 'markdown'
+  | 'link'
+  | 'image'
+  | 'attribute';
+
+export type BehaviorWaitUntil =
+  | 'visible'
+  | 'attached'
+  | 'hidden'
+  | 'networkidle'
+  | 'timeout';
+
+export type BehaviorLoopMode = 'elements' | 'times';
+
+export type BehaviorConditionType =
+  | 'exists'
+  | 'not_exists'
+  | 'text_contains'
+  | 'customJS';
+
+export interface BehaviorStep {
+  id?: string;
+  name?: string;
+  type: BehaviorStepType;
+  selector?: string;
+  children?: BehaviorStep[];
+  elseChildren?: BehaviorStep[];
+  url?: string;
+  value?: string;
+  timeout?: number;
+  waitUntil?: BehaviorWaitUntil;
+  waitAfter?: number;
+  field?: string;
+  extractType?: BehaviorExtractType;
+  attribute?: string;
+  loopMode?: BehaviorLoopMode;
+  maxLoops?: number;
+  outputKey?: string;
+  conditionType?: BehaviorConditionType;
+  conditionValue?: string;
+  code?: string;
+}
+
 export interface CrawleeTaskConfig {
+  taskMode?: TaskMode;
   crawlerType: 'playwright' | 'cheerio' | 'puppeteer';
   urls: string[];
   maxRequestsPerCrawl?: number;
@@ -75,6 +145,7 @@ export interface CrawleeTaskConfig {
   useCookie?: boolean;
   cookieString?: string;
   cookieDomain?: string;
+  cookieCredentialId?: number;
   baseSelector?: string;
   maxItems?: number;
   scrollEnabled?: boolean;
@@ -89,6 +160,7 @@ export interface CrawleeTaskConfig {
   datasetId?: string;
   keyValueStoreId?: string;
   preActions?: PreActionConfig[];
+  behaviorSteps?: BehaviorStep[];
   resultFilters?: ResultFilterRule[];
   notification?: TaskNotificationConfig;
   outputFormat?: 'json' | 'packaged';

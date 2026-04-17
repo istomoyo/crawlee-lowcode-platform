@@ -2,9 +2,14 @@
   Injectable,
   InternalServerErrorException,
   BadRequestException,
+  HttpException,
   Logger,
+  NotFoundException,
+  OnModuleDestroy,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import * as playwright from 'playwright';
+import { randomUUID } from 'crypto';
 import {
   PlaywrightCrawler,
   CheerioCrawler,
@@ -21,15 +26,24 @@ import { CrawleeEngineService } from './crawlee-engine.service';
 import { TaskGateway } from './task.gateway';
 import { FilePackageService } from './file-package.service';
 import {
+  createPlaywrightCookies,
   getCookieMatchDomain,
+  hasInlineCookieString,
+  listUnsafeCustomJsFeatures,
+  normalizeCookieDomain,
   sanitizeTaskConfig,
+  shouldAttachCookieToUrl,
 } from './task-config.utils';
 import { formatHtmlFragment } from './content-extraction.utils';
+import { NotificationService } from '../notification/notification.service';
+import { isUnsafeCustomJsEnabled } from '../config/runtime-security';
+import { TaskCookieCredentialService } from './task-cookie-credential.service';
 
 // 默认“类真实浏览器”配置
 const DEFAULT_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const DEFAULT_VIEWPORT = { width: 1366, height: 768 };
+const PREVIEW_NAVIGATION_TIMEOUT_MS = 45000;
 
 /**
  * 创建带“拟真”设置的 Playwright Page
@@ -48,6 +62,7 @@ async function createStealthPage(headless = true) {
     viewport: DEFAULT_VIEWPORT,
     locale: 'zh-CN',
     timezoneId: 'Asia/Shanghai',
+    ignoreHTTPSErrors: true,
     geolocation: { longitude: 116.397, latitude: 39.917 },
     permissions: ['geolocation'],
   });
@@ -66,6 +81,28 @@ async function createStealthPage(headless = true) {
 
   const page = await context.newPage();
   return { browser, page };
+}
+
+export function getMissingPlaywrightBrowserMessage(error: unknown): string | null {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  if (!message.includes("Executable doesn't exist")) {
+    return null;
+  }
+
+  return '预览浏览器未安装，请在 backend/crawler 目录运行 npx playwright install chromium 后重试';
+}
+
+export function isRelativeScopedXPath(selector: string): boolean {
+  const normalized = String(selector || '').trim();
+  if (!normalized) {
+    return false;
+  }
+
+  const expression = normalized.startsWith('xpath=')
+    ? normalized.slice('xpath='.length).trim()
+    : normalized;
+
+  return expression.startsWith('./') || expression.startsWith('.//');
 }
 
 export interface ResultItem {
@@ -98,9 +135,552 @@ export interface ParseResult {
   images: NodeItem[];
   links: NodeItem[];
 }
+
+export interface XpathValidationListItem {
+  index: number;
+  matchCount: number;
+  values: string[];
+  signatures: string[];
+}
+
+export interface XpathValidationResult {
+  scope: 'page' | 'list';
+  status: 'stable' | 'partial' | 'ambiguous' | 'missing' | 'empty_base';
+  count?: number;
+  samples?: string[];
+  baseCount?: number;
+  sampledBaseCount?: number;
+  matchedItemCount?: number;
+  zeroMatchCount?: number;
+  multiMatchCount?: number;
+  maxMatchCount?: number;
+  counts?: number[];
+  signatureSamples?: string[];
+  items?: XpathValidationListItem[];
+}
+
+export interface BrowserPickerRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface BrowserPickerSelection {
+  primaryXpath: string;
+  candidateXpaths: string[];
+  absolutePrimaryXpath: string;
+  absoluteCandidateXpaths: string[];
+  relativePrimaryXpath?: string;
+  relativeCandidateXpaths: string[];
+  scopeMatched: boolean;
+  tagName: string;
+  textPreview: string;
+  attributes: {
+    id?: string;
+    className?: string;
+    name?: string;
+  };
+  rect: BrowserPickerRect;
+}
+
+export interface BrowserPickerSnapshot {
+  sessionId: string;
+  screenshotBase64: string;
+  pageUrl: string;
+  title: string;
+  viewport: {
+    width: number;
+    height: number;
+  };
+  selected: BrowserPickerSelection | null;
+}
+
+interface BrowserPickerSession {
+  id: string;
+  browser: playwright.Browser;
+  page: playwright.Page;
+  viewport: {
+    width: number;
+    height: number;
+  };
+  createdAt: number;
+  touchedAt: number;
+  selected: BrowserPickerSelection | null;
+}
+
+type TaskCookieAccessOptions = Pick<
+  CrawleeTaskConfig,
+  'useCookie' | 'cookieString' | 'cookieDomain' | 'cookieCredentialId'
+>;
+
+function xpathPreviewDomHelpersFactory() {
+  const EXACT_ATTRIBUTE_PRIORITY = [
+    'data-testid',
+    'data-test',
+    'data-qa',
+    'data-cy',
+    'data-ga4-label',
+    'data-role',
+    'aria-label',
+    'aria-current',
+    'aria-selected',
+    'role',
+    'title',
+    'name',
+    'type',
+  ];
+  const GENERIC_CLASS_TOKENS = new Set([
+    'active',
+    'selected',
+    'current',
+    'open',
+    'close',
+    'show',
+    'hide',
+    'hover',
+    'focus',
+    'disabled',
+    'enabled',
+    'checked',
+    'unchecked',
+    'visited',
+  ]);
+
+  function evaluateXPathAll(xpath: string, contextNode: Document | Element) {
+    if (!xpath) {
+      return [] as Element[];
+    }
+
+    const scope =
+      (contextNode as Element | null)?.ownerDocument ||
+      (contextNode as Document) ||
+      document;
+    const snapshot = scope.evaluate(
+      xpath,
+      contextNode || document,
+      null,
+      XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+      null,
+    );
+
+    const nodes: Element[] = [];
+    for (let i = 0; i < snapshot.snapshotLength; i += 1) {
+      const node = snapshot.snapshotItem(i);
+      if (node && node.nodeType === Node.ELEMENT_NODE) {
+        nodes.push(node as Element);
+      }
+    }
+    return nodes;
+  }
+
+  function quoteXPathLiteral(value: string) {
+    const normalized = String(value ?? '');
+    if (!normalized.includes("'")) {
+      return `'${normalized}'`;
+    }
+    if (!normalized.includes('"')) {
+      return `"${normalized}"`;
+    }
+    return `concat(${normalized
+      .split("'")
+      .map((part) => `'${part}'`)
+      .join(`, "'", `)})`;
+  }
+
+  function dedupe<T>(values: T[]) {
+    return [...new Set(values.filter(Boolean))];
+  }
+
+  function looksDynamicValue(name: string, rawValue: string) {
+    const value = String(rawValue ?? '').trim();
+    if (!value) {
+      return true;
+    }
+
+    if (name === 'src') {
+      return false;
+    }
+
+    if (value.length > 120) {
+      return true;
+    }
+
+    if (/^\d+$/.test(value)) {
+      return true;
+    }
+
+    if (/^[a-f0-9]{8,}$/i.test(value)) {
+      return true;
+    }
+
+    const digitCount = (value.match(/\d/g) || []).length;
+    return digitCount > 0 && digitCount / value.length > 0.45;
+  }
+
+  function looksDynamicSegment(value: string) {
+    const normalized = String(value ?? '').trim();
+    if (!normalized) {
+      return true;
+    }
+
+    return (
+      /^\d+$/.test(normalized) ||
+      /^[a-f0-9]{6,}$/i.test(normalized) ||
+      /\d{3,}/.test(normalized)
+    );
+  }
+
+  function isUsefulClassToken(token: string) {
+    if (!token || token.length < 3) {
+      return false;
+    }
+
+    if (!/^[A-Za-z][\w-]*$/.test(token)) {
+      return false;
+    }
+
+    if (GENERIC_CLASS_TOKENS.has(token.toLowerCase())) {
+      return false;
+    }
+
+    return !/\d{4,}/.test(token) && !/[A-Fa-f0-9]{8,}/.test(token);
+  }
+
+  function getClassPredicates(element: Element) {
+    const className = element.getAttribute('class') || '';
+    return className
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter(isUsefulClassToken)
+      .slice(0, 2)
+      .map(
+        (token: string) =>
+          `contains(concat(' ', normalize-space(@class), ' '), ${quoteXPathLiteral(` ${token} `)})`,
+      );
+  }
+
+  function buildUrlPatterns(attrName: string, rawValue: string) {
+    const value = String(rawValue ?? '').trim();
+    if (!value) {
+      return [] as Array<{ predicate: string; score: number }>;
+    }
+
+    try {
+      const url = new URL(value, window.location.href);
+      const patterns: Array<{ predicate: string; score: number }> = [];
+      const segments = url.pathname.split('/').filter(Boolean);
+
+      if (segments.length > 0) {
+        patterns.push({
+          predicate: `contains(@${attrName}, ${quoteXPathLiteral(`/${segments[0]}/`)})`,
+          score: 72,
+        });
+      }
+
+      if (segments.length > 1 && !looksDynamicSegment(segments[1])) {
+        patterns.push({
+          predicate: `contains(@${attrName}, ${quoteXPathLiteral(`/${segments[0]}/${segments[1]}`)})`,
+          score: 78,
+        });
+      }
+
+      if (url.origin && url.origin !== window.location.origin) {
+        patterns.push({
+          predicate: `contains(@${attrName}, ${quoteXPathLiteral(url.origin)})`,
+          score: 55,
+        });
+      }
+
+      return patterns;
+    } catch (error) {
+      return [] as Array<{ predicate: string; score: number }>;
+    }
+  }
+
+  function getPreferredAttributeCandidates(element: Element) {
+    const candidates: Array<{ predicate: string; score: number }> = [];
+    const seen = new Set();
+    const tagName = element.tagName.toLowerCase();
+    const attributes = Array.from(element.attributes || []) as Attr[];
+
+    function pushCandidate(predicate: string, score: number) {
+      if (!predicate || seen.has(predicate)) {
+        return;
+      }
+      seen.add(predicate);
+      candidates.push({ predicate, score });
+    }
+
+    for (const attributeName of EXACT_ATTRIBUTE_PRIORITY) {
+      const attributeValue = element.getAttribute(attributeName);
+      if (attributeValue && !looksDynamicValue(attributeName, attributeValue)) {
+        pushCandidate(
+          `@${attributeName}=${quoteXPathLiteral(attributeValue.trim())}`,
+          96,
+        );
+      }
+    }
+
+    const dataAttributes = attributes
+      .filter((attribute: Attr) => attribute.name.startsWith('data-'))
+      .sort((left: Attr, right: Attr) => {
+        const leftIndex = EXACT_ATTRIBUTE_PRIORITY.indexOf(left.name);
+        const rightIndex = EXACT_ATTRIBUTE_PRIORITY.indexOf(right.name);
+        return (
+          (leftIndex === -1 ? 999 : leftIndex) -
+          (rightIndex === -1 ? 999 : rightIndex)
+        );
+      });
+
+    for (const attribute of dataAttributes) {
+      if (!looksDynamicValue(attribute.name, attribute.value)) {
+        pushCandidate(
+          `@${attribute.name}=${quoteXPathLiteral(attribute.value.trim())}`,
+          90,
+        );
+      }
+    }
+
+    if (tagName === 'img') {
+      for (const pattern of buildUrlPatterns(
+        'src',
+        element.getAttribute('src') ||
+          element.getAttribute('data-src') ||
+          (element as HTMLImageElement).src,
+      )) {
+        pushCandidate(pattern.predicate, pattern.score - 5);
+      }
+    }
+
+    for (const predicate of getClassPredicates(element)) {
+      pushCandidate(predicate, 44);
+    }
+
+    return candidates.sort(
+      (left, right) =>
+        right.score - left.score || left.predicate.length - right.predicate.length,
+    );
+  }
+
+  function buildFallbackSegment(parent: Element, element: Element) {
+    const tagName = element.tagName.toLowerCase();
+    const sameTagSiblings = (Array.from(parent.children) as Element[]).filter(
+      (child: Element) => child.tagName === element.tagName,
+    );
+
+    if (sameTagSiblings.length <= 1) {
+      return tagName;
+    }
+
+    return `${tagName}[${sameTagSiblings.indexOf(element) + 1}]`;
+  }
+
+  function buildSegmentOptions(parent: Element, element: Element) {
+    const options: Array<{ segment: string; score: number; matchCount: number }> = [];
+    const seen = new Set();
+    const tagName = element.tagName.toLowerCase();
+    const candidates = getPreferredAttributeCandidates(element);
+
+    function pushOption(segment: string, score: number) {
+      if (!segment || seen.has(segment)) {
+        return;
+      }
+
+      const matches = evaluateXPathAll(`./${segment}`, parent);
+      if (!matches.length || !matches.includes(element)) {
+        return;
+      }
+
+      seen.add(segment);
+      options.push({ segment, score, matchCount: matches.length });
+    }
+
+    for (const candidate of candidates.slice(0, 6)) {
+      pushOption(`${tagName}[${candidate.predicate}]`, candidate.score);
+    }
+
+    for (let i = 0; i < Math.min(candidates.length, 4); i += 1) {
+      for (let j = i + 1; j < Math.min(candidates.length, 4); j += 1) {
+        pushOption(
+          `${tagName}[${candidates[i].predicate} and ${candidates[j].predicate}]`,
+          candidates[i].score + candidates[j].score + 12,
+        );
+      }
+    }
+
+    for (const candidate of candidates.slice(0, 3)) {
+      const filteredMatches = evaluateXPathAll(
+        `./${tagName}[${candidate.predicate}]`,
+        parent,
+      );
+      const index = filteredMatches.indexOf(element);
+      if (filteredMatches.length > 1 && index !== -1) {
+        pushOption(
+          `${tagName}[${candidate.predicate}][${index + 1}]`,
+          candidate.score - 12,
+        );
+      }
+    }
+
+    pushOption(buildFallbackSegment(parent, element), 10);
+
+    return options
+      .sort(
+        (left, right) =>
+          right.score - left.score ||
+          left.matchCount - right.matchCount ||
+          left.segment.length - right.segment.length,
+      )
+      .slice(0, 4);
+  }
+
+  function getElementValue(element: Element) {
+    const tagName = element.tagName.toLowerCase();
+
+    if (tagName === 'a') {
+      return String(
+        element.getAttribute('href') ||
+          (element as HTMLAnchorElement).href ||
+          '',
+      ).trim();
+    }
+
+    if (tagName === 'img') {
+      return String(
+        element.getAttribute('src') ||
+          element.getAttribute('data-src') ||
+          (element as HTMLImageElement).src ||
+          '',
+      ).trim();
+    }
+
+    return String(element.textContent || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120);
+  }
+
+  function validateRelativeXPath(baseElements: Element[], relativeXPath: string) {
+    const sampledBaseElements = baseElements.slice(0, 12);
+    const items = sampledBaseElements.map((baseElement, index) => {
+      const matches = evaluateXPathAll(relativeXPath, baseElement);
+      return {
+        index,
+        matchCount: matches.length,
+        values: dedupe(matches.map((match: Element) => getElementValue(match)).filter(Boolean)).slice(
+          0,
+          3,
+        ),
+        signatures: [],
+      };
+    });
+
+    const counts = items.map((item) => item.matchCount);
+    const zeroMatchCount = counts.filter((count) => count === 0).length;
+    const multiMatchCount = counts.filter((count) => count > 1).length;
+    const matchedItemCount = counts.filter((count) => count > 0).length;
+    const signatureSamples: string[] = [];
+
+    let status = 'stable';
+    if (sampledBaseElements.length === 0) {
+      status = 'empty_base';
+    } else if (matchedItemCount === 0) {
+      status = 'missing';
+    } else if (multiMatchCount > 0) {
+      status = 'ambiguous';
+    } else if (zeroMatchCount > 0) {
+      status = 'partial';
+    }
+
+    return {
+      scope: 'list',
+      status,
+      baseCount: baseElements.length,
+      sampledBaseCount: sampledBaseElements.length,
+      matchedItemCount,
+      zeroMatchCount,
+      multiMatchCount,
+      maxMatchCount: counts.length > 0 ? Math.max(...counts) : 0,
+      counts,
+      signatureSamples,
+      items: items.slice(0, 8),
+    };
+  }
+
+  function scoreRelativeXPath(
+    baseElements: Element[],
+    sampleBase: Element,
+    target: Element,
+    relativeXPath: string,
+  ) {
+    const sampleMatches = evaluateXPathAll(relativeXPath, sampleBase);
+    if (sampleMatches.length !== 1 || sampleMatches[0] !== target) {
+      return Number.NEGATIVE_INFINITY;
+    }
+
+    const validation = validateRelativeXPath(baseElements, relativeXPath);
+    const indexCount = (relativeXPath.match(/\[\d+\]/g) || []).length;
+
+    let score = (validation.matchedItemCount || 0) * 24;
+    score -= (validation.zeroMatchCount || 0) * 8;
+    score -= (validation.multiMatchCount || 0) * 40;
+    score -= indexCount * 2;
+    score -= relativeXPath.includes('.//') ? 20 : 0;
+    score += relativeXPath.includes('@') ? 14 : 0;
+    score -= relativeXPath.length * 0.02;
+
+    return score;
+  }
+
+  function buildRelativeXPath(
+    baseElement: Element,
+    targetElement: Element,
+    peerBaseElements?: Element[],
+  ) {
+    if (!baseElement || !targetElement) {
+      return './self::*';
+    }
+
+    if (baseElement === targetElement) {
+      return './self::*';
+    }
+
+    const chain: Array<{ parent: Element; element: Element }> = [];
+    let current = targetElement;
+    while (current && current !== baseElement) {
+      if (!current.parentElement) {
+        break;
+      }
+      chain.unshift({ parent: current.parentElement, element: current });
+      current = current.parentElement;
+    }
+
+    if (current !== baseElement || chain.length === 0) {
+      return './self::*';
+    }
+
+    // Prefer the old positional strategy so every list item follows the same
+    // DOM-structure-based path, instead of inferring attribute-heavy XPath.
+    return `./${chain
+      .map((step) => buildFallbackSegment(step.parent, step.element))
+      .join('/')}`;
+  }
+
+  return {
+    evaluateXPathAll,
+    buildRelativeXPath,
+    validateRelativeXPath,
+    getElementValue,
+  };
+}
+
 @Injectable()
-export class TaskService {
+export class TaskService implements OnModuleDestroy {
   private readonly logger = new Logger(TaskService.name);
+  private readonly browserPickerSessionTtlMs = 10 * 60 * 1000;
+  private readonly executionRuntimeCookieTtlMs = 12 * 60 * 60 * 1000;
+  private readonly browserPickerSessions = new Map<string, BrowserPickerSession>();
 
   constructor(
     @InjectRepository(Task)
@@ -110,9 +690,298 @@ export class TaskService {
     private readonly crawleeEngineService: CrawleeEngineService,
     private readonly taskGateway: TaskGateway,
     private readonly filePackageService: FilePackageService,
+    private readonly taskCookieCredentialService: TaskCookieCredentialService,
+    private readonly notificationService: NotificationService,
   ) {}
 
-  async capturePreviewScreenshot(url: string): Promise<string> {
+  async onModuleDestroy() {
+    await this.closeAllBrowserPickerSessions();
+  }
+
+  private getCompactViewportScreenshotOptions(): playwright.PageScreenshotOptions {
+    return {
+      fullPage: false,
+      type: 'jpeg',
+      quality: 72,
+      scale: 'css',
+      animations: 'disabled',
+      caret: 'hide',
+    };
+  }
+
+  private async injectXpathPreviewHelpers(page: playwright.Page) {
+    const helperSource = xpathPreviewDomHelpersFactory.toString();
+    await page.addInitScript({
+      content: `window.__taskXpathPreviewHelpersFactory = ${helperSource};`,
+    });
+    await page
+      .evaluate((source) => {
+        const win = window as any;
+        if (typeof win.__taskXpathPreviewHelpersFactory !== 'function') {
+          win.__taskXpathPreviewHelpersFactory = (0, eval)(`(${source})`);
+        }
+      }, helperSource)
+      .catch(() => undefined);
+  }
+
+  private createTaskOperationError(
+    error: unknown,
+    fallbackMessage: string,
+    options: {
+      allowMissingBrowserHint?: boolean;
+    } = {},
+  ): HttpException {
+    if (options.allowMissingBrowserHint) {
+      const missingBrowserMessage = getMissingPlaywrightBrowserMessage(error);
+      if (missingBrowserMessage) {
+        return new ServiceUnavailableException(missingBrowserMessage);
+      }
+    }
+
+    if (error instanceof HttpException) {
+      return error;
+    }
+
+    return new InternalServerErrorException(fallbackMessage);
+  }
+
+  private parseTaskConfig(
+    rawConfig?: string | null,
+    allowInlineCookieString = true,
+  ): Partial<CrawleeTaskConfig> {
+    if (!rawConfig) {
+      return {};
+    }
+
+    try {
+      const parsed = JSON.parse(rawConfig);
+      if (parsed?.config && typeof parsed.config === 'object') {
+        return sanitizeTaskConfig(parsed.config, { allowInlineCookieString });
+      }
+
+      return sanitizeTaskConfig(parsed, { allowInlineCookieString });
+    } catch (error) {
+      this.logger.warn(
+        `解析任务配置失败: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return {};
+    }
+  }
+
+  private serializeTaskConfig(
+    config?: Partial<CrawleeTaskConfig> | Record<string, unknown> | null,
+  ): string {
+    return JSON.stringify(config || {});
+  }
+
+  private async maybePersistRedactedTaskConfig(
+    task: Task | undefined,
+    runtimeConfig?: Partial<CrawleeTaskConfig> | null,
+  ) {
+    if (!task?.id || !runtimeConfig || !hasInlineCookieString(runtimeConfig)) {
+      return;
+    }
+
+    const redactedConfig = sanitizeTaskConfig(runtimeConfig, {
+      allowInlineCookieString: false,
+    });
+    const serializedRedactedConfig = this.serializeTaskConfig(redactedConfig);
+
+    if (serializedRedactedConfig === String(task.config || '{}')) {
+      return;
+    }
+
+    await this.taskRepository.update(task.id, {
+      config: serializedRedactedConfig,
+    });
+    task.config = serializedRedactedConfig;
+  }
+
+  private async storeExecutionRuntimeCookie(
+    executionId: number,
+    config: TaskCookieAccessOptions,
+  ) {
+    const cookieString = String(config.cookieString ?? '').trim();
+    if (!config.useCookie || !cookieString || config.cookieCredentialId) {
+      return;
+    }
+
+    const sealedCookie = this.taskCookieCredentialService.sealCookieString(
+      cookieString,
+    );
+
+    await this.executionRepository.update(executionId, {
+      runtimeCookieEncrypted: sealedCookie.encryptedCookie,
+      runtimeCookieIv: sealedCookie.iv,
+      runtimeCookieAuthTag: sealedCookie.authTag,
+      runtimeCookieDomain: normalizeCookieDomain(config.cookieDomain) || null,
+      runtimeCookieExpiresAt: new Date(
+        Date.now() + this.executionRuntimeCookieTtlMs,
+      ),
+    });
+  }
+
+  private resolveExecutionRuntimeCookie(
+    execution?: Execution | null,
+  ): TaskCookieAccessOptions {
+    if (
+      !execution?.runtimeCookieEncrypted ||
+      !execution.runtimeCookieIv ||
+      !execution.runtimeCookieAuthTag
+    ) {
+      return { useCookie: false };
+    }
+
+    if (
+      execution.runtimeCookieExpiresAt &&
+      execution.runtimeCookieExpiresAt.getTime() <= Date.now()
+    ) {
+      return { useCookie: false };
+    }
+
+    try {
+      return {
+        useCookie: true,
+        cookieString: this.taskCookieCredentialService.openSealedCookie({
+          encryptedCookie: execution.runtimeCookieEncrypted,
+          iv: execution.runtimeCookieIv,
+          authTag: execution.runtimeCookieAuthTag,
+        }),
+        cookieDomain: execution.runtimeCookieDomain || undefined,
+      };
+    } catch (error) {
+      this.logger.warn(
+        `解析执行期 Cookie 快照失败: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return { useCookie: false };
+    }
+  }
+
+  private async resolveTaskCookieOptions(
+    userId: number | undefined,
+    cookieOptions?: TaskCookieAccessOptions,
+  ): Promise<TaskCookieAccessOptions> {
+    const cookieString = String(cookieOptions?.cookieString ?? '').trim();
+
+    if (!cookieOptions?.useCookie) {
+      return {
+        useCookie: false,
+        cookieDomain: cookieOptions?.cookieDomain,
+      };
+    }
+
+    if (cookieString) {
+      return {
+        useCookie: true,
+        cookieString,
+        cookieDomain: cookieOptions?.cookieDomain,
+        cookieCredentialId: cookieOptions?.cookieCredentialId,
+      };
+    }
+
+    const cookieCredentialId = Number(cookieOptions?.cookieCredentialId);
+    if (!Number.isInteger(cookieCredentialId) || cookieCredentialId <= 0) {
+      return {
+        useCookie: false,
+        cookieDomain: cookieOptions?.cookieDomain,
+      };
+    }
+
+    if (!userId) {
+      throw new BadRequestException('缺少用户上下文，无法解析 Cookie 凭证');
+    }
+
+    const resolvedCredential =
+      await this.taskCookieCredentialService.resolveCredentialCookie(
+        userId,
+        cookieCredentialId,
+      );
+
+    return {
+      useCookie: true,
+      cookieString: resolvedCredential.cookieString,
+      cookieDomain:
+        resolvedCredential.cookieDomain || cookieOptions?.cookieDomain,
+      cookieCredentialId,
+    };
+  }
+
+  private async resolveTaskRuntimeConfig(
+    config: CrawleeTaskConfig,
+    userId?: number,
+    fallbackUrl?: string,
+  ): Promise<CrawleeTaskConfig> {
+    const resolvedCookieOptions = await this.resolveTaskCookieOptions(
+      userId,
+      config,
+    );
+
+    return sanitizeTaskConfig({
+      ...config,
+      urls:
+        Array.isArray(config.urls) && config.urls.length > 0
+          ? config.urls
+          : fallbackUrl
+            ? [fallbackUrl]
+            : [],
+      ...resolvedCookieOptions,
+    }) as CrawleeTaskConfig;
+  }
+
+  private async applyTaskCookiesToPage(
+    page: playwright.Page,
+    targetUrl: string,
+    cookieOptions?: TaskCookieAccessOptions,
+  ) {
+    const cookieString = String(cookieOptions?.cookieString ?? '').trim();
+
+    if (!cookieOptions?.useCookie || !cookieString) {
+      return;
+    }
+
+    if (
+      !shouldAttachCookieToUrl(
+        targetUrl,
+        cookieOptions.cookieDomain,
+        targetUrl,
+      )
+    ) {
+      this.logger.warn(`预览阶段跳过跨域 Cookie 注入: ${targetUrl}`);
+      return;
+    }
+
+    const cookies = createPlaywrightCookies(
+      cookieString,
+      targetUrl,
+      cookieOptions.cookieDomain,
+    );
+
+    if (cookies.length === 0) {
+      return;
+    }
+
+    try {
+      await page.context().addCookies(
+        cookies as unknown as Parameters<playwright.BrowserContext['addCookies']>[0],
+      );
+    } catch (error) {
+      this.logger.warn(
+        `预览阶段应用 Cookie 失败: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  async capturePreviewScreenshot(
+    url: string,
+    cookieOptions?: TaskCookieAccessOptions,
+    userId?: number,
+  ): Promise<string> {
     if (!/^https?:\/\//.test(url)) {
       throw new BadRequestException('URL 格式不正确');
     }
@@ -123,17 +992,662 @@ export class TaskService {
       browser = stealth.browser;
       const page = stealth.page;
 
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-      await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => null);
+      await this.injectXpathPreviewHelpers(page);
+      const resolvedCookieOptions = await this.resolveTaskCookieOptions(
+        userId,
+        cookieOptions,
+      );
+      await this.applyTaskCookiesToPage(page, url, resolvedCookieOptions);
+      await this.navigatePreviewPage(page, url);
 
-      const buffer = await page.screenshot({ fullPage: false });
+      const buffer = await page.screenshot(
+        this.getCompactViewportScreenshotOptions(),
+      );
       return buffer.toString('base64');
     } catch (e) {
       this.logger.error('截图失败', e);
-      throw new InternalServerErrorException('截图失败');
+      throw this.createTaskOperationError(e, '截图失败', {
+        allowMissingBrowserHint: true,
+      });
     } finally {
       if (browser) await browser.close();
     }
+  }
+
+  private async closeAllBrowserPickerSessions() {
+    const sessions = [...this.browserPickerSessions.values()];
+    this.browserPickerSessions.clear();
+    await Promise.all(
+      sessions.map(async (session) => {
+        await session.browser.close().catch(() => undefined);
+      }),
+    );
+  }
+
+  private async cleanupExpiredBrowserPickerSessions() {
+    const now = Date.now();
+    const expiredSessions = [...this.browserPickerSessions.values()].filter(
+      (session) => now - session.touchedAt > this.browserPickerSessionTtlMs,
+    );
+
+    for (const session of expiredSessions) {
+      this.browserPickerSessions.delete(session.id);
+      await session.browser.close().catch(() => undefined);
+    }
+  }
+
+  private touchBrowserPickerSession(session: BrowserPickerSession) {
+    session.touchedAt = Date.now();
+  }
+
+  private async requireBrowserPickerSession(sessionId: string) {
+    await this.cleanupExpiredBrowserPickerSessions();
+    const session = this.browserPickerSessions.get(sessionId);
+    if (!session) {
+      throw new NotFoundException('拾取会话不存在或已过期');
+    }
+
+    this.touchBrowserPickerSession(session);
+    return session;
+  }
+
+  private async buildBrowserPickerSnapshot(
+    session: BrowserPickerSession,
+  ): Promise<BrowserPickerSnapshot> {
+    const screenshot = await session.page.screenshot(
+      this.getCompactViewportScreenshotOptions(),
+    );
+    const title = await session.page.title().catch(() => '');
+
+    return {
+      sessionId: session.id,
+      screenshotBase64: `data:image/jpeg;base64,${screenshot.toString('base64')}`,
+      pageUrl: session.page.url(),
+      title,
+      viewport: session.viewport,
+      selected: session.selected,
+    };
+  }
+
+  private async waitForPickerPageSettled(page: playwright.Page) {
+    await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => undefined);
+    await page.waitForLoadState('networkidle', { timeout: 2500 }).catch(() => undefined);
+    await page.waitForTimeout(250).catch(() => undefined);
+  }
+
+  private async waitForPreviewPageSettled(
+    page: playwright.Page,
+    waitSelector?: string,
+  ) {
+    await page.waitForTimeout(2000).catch(() => undefined);
+    await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => undefined);
+
+    if (waitSelector) {
+      await page.waitForSelector(waitSelector, { timeout: 5000 }).catch(() => undefined);
+    }
+
+    await page.waitForTimeout(1000).catch(() => undefined);
+  }
+
+  private isPreviewNavigationTimeout(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error ?? '');
+    return /page\.goto: Timeout/i.test(message) || /Timeout \d+ms exceeded/i.test(message);
+  }
+
+  private async navigatePreviewPage(
+    page: playwright.Page,
+    url: string,
+    waitSelector?: string,
+  ) {
+    try {
+      await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: PREVIEW_NAVIGATION_TIMEOUT_MS,
+      });
+    } catch (error) {
+      if (!this.isPreviewNavigationTimeout(error)) {
+        throw error;
+      }
+
+      const currentUrl = page.url();
+      const hasNavigated =
+        currentUrl &&
+        currentUrl !== 'about:blank' &&
+        currentUrl !== 'chrome-error://chromewebdata/';
+
+      this.logger.warn(
+        `Preview navigation timed out for ${url}; currentUrl=${currentUrl || 'unknown'}, attempting relaxed recovery`,
+      );
+
+      if (!hasNavigated) {
+        await page.goto(url, {
+          waitUntil: 'commit',
+          timeout: PREVIEW_NAVIGATION_TIMEOUT_MS,
+        });
+      }
+    }
+
+    await this.waitForPreviewPageSettled(page, waitSelector);
+  }
+
+  async createBrowserPickerSession(url: string): Promise<BrowserPickerSnapshot> {
+    if (!/^https?:\/\//.test(url)) {
+      throw new BadRequestException('URL 格式不正确');
+    }
+
+    await this.cleanupExpiredBrowserPickerSessions();
+
+    const stealth = await createStealthPage(true);
+    const session: BrowserPickerSession = {
+      id: randomUUID(),
+      browser: stealth.browser,
+      page: stealth.page,
+      viewport: { ...DEFAULT_VIEWPORT },
+      createdAt: Date.now(),
+      touchedAt: Date.now(),
+      selected: null,
+    };
+
+    try {
+      await this.navigatePreviewPage(stealth.page, url);
+      this.browserPickerSessions.set(session.id, session);
+      return this.buildBrowserPickerSnapshot(session);
+    } catch (error) {
+      await stealth.browser.close().catch(() => undefined);
+      this.logger.error('创建浏览器拾取会话失败', error);
+      throw new InternalServerErrorException('创建浏览器拾取会话失败');
+    }
+  }
+
+  async refreshBrowserPickerSession(sessionId: string) {
+    const session = await this.requireBrowserPickerSession(sessionId);
+    session.selected = null;
+    await this.waitForPickerPageSettled(session.page);
+    return this.buildBrowserPickerSnapshot(session);
+  }
+
+  async closeBrowserPickerSession(sessionId: string) {
+    const session = this.browserPickerSessions.get(sessionId);
+    if (!session) {
+      return { success: true };
+    }
+
+    this.browserPickerSessions.delete(sessionId);
+    await session.browser.close().catch(() => undefined);
+    return { success: true };
+  }
+
+  async pickBrowserPickerElement(
+    sessionId: string,
+    xRatio: number,
+    yRatio: number,
+    scopeChain: string[] = [],
+  ) {
+    const session = await this.requireBrowserPickerSession(sessionId);
+    const x = Math.max(
+      0,
+      Math.min(session.viewport.width - 1, Math.round(xRatio * session.viewport.width)),
+    );
+    const y = Math.max(
+      0,
+      Math.min(session.viewport.height - 1, Math.round(yRatio * session.viewport.height)),
+    );
+
+    const normalizedScopeChain = scopeChain
+      .map((selector) => String(selector || '').trim())
+      .filter(Boolean);
+
+    const selection = await session.page.evaluate(({ x, y, scopeChain }) => {
+      const choosePreferredElement = (element: Element | null) => {
+        let current = element as HTMLElement | null;
+        const wrapperTags = new Set([
+          'span',
+          'strong',
+          'em',
+          'i',
+          'b',
+          'small',
+          'svg',
+          'path',
+          'use',
+        ]);
+
+        while (current?.parentElement) {
+          const rect = current.getBoundingClientRect();
+          const tagName = current.tagName.toLowerCase();
+          const isInteractive =
+            current.matches(
+              'a,button,input,textarea,select,label,[role="button"],[role="link"],[onclick]',
+            ) || current.tabIndex >= 0;
+
+          if (
+            rect.width >= 12 &&
+            rect.height >= 12 &&
+            (!wrapperTags.has(tagName) || isInteractive)
+          ) {
+            return current;
+          }
+
+          current = current.parentElement;
+        }
+
+        return (element as HTMLElement | null) || null;
+      };
+
+      const normalizeXPath = (selector: string, scoped = false) => {
+        let normalized = selector.trim();
+        if (normalized.startsWith('xpath=')) {
+          normalized = normalized.slice(6);
+        }
+
+        if (scoped && normalized.startsWith('//')) {
+          return `.${normalized}`;
+        }
+
+        if (!scoped && normalized.startsWith('.//')) {
+          return normalized.slice(1);
+        }
+
+        return normalized;
+      };
+
+      const quoteXPathLiteral = (value: string) => {
+        if (!value.includes("'")) {
+          return `'${value}'`;
+        }
+        if (!value.includes('"')) {
+          return `"${value}"`;
+        }
+
+        return `concat(${value
+          .split("'")
+          .map((part, index) => {
+            if (index === 0) {
+              return `'${part}'`;
+            }
+            if (!part) {
+              return `"'"`;
+            }
+            return `"'",'${part}'`;
+          })
+          .join(',')})`;
+      };
+
+      const xpathCount = (xpath: string, contextNode: Node = document) => {
+        try {
+          return document.evaluate(
+            `count(${xpath})`,
+            contextNode,
+            null,
+            XPathResult.NUMBER_TYPE,
+            null,
+          ).numberValue;
+        } catch {
+          return Number.POSITIVE_INFINITY;
+        }
+      };
+
+      const evaluateXPathElements = (
+        selector: string,
+        contextNode: Node = document,
+        scoped = false,
+      ) => {
+        try {
+          const xpath = normalizeXPath(selector, scoped);
+          if (!xpath) {
+            return [] as Element[];
+          }
+
+          const snapshot = document.evaluate(
+            xpath,
+            contextNode,
+            null,
+            XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+            null,
+          );
+          const elements: Element[] = [];
+          for (let index = 0; index < snapshot.snapshotLength; index += 1) {
+            const node = snapshot.snapshotItem(index);
+            if (node && node.nodeType === Node.ELEMENT_NODE) {
+              elements.push(node as Element);
+            }
+          }
+          return elements;
+        } catch {
+          return [] as Element[];
+        }
+      };
+
+      const resolveScopeElements = (selectors: string[]) => {
+        if (!selectors.length) {
+          return [] as Element[];
+        }
+
+        let contexts: Node[] = [document];
+        for (const selector of selectors) {
+          const nextContexts: Element[] = [];
+          const seen = new Set<Element>();
+
+          for (const contextNode of contexts) {
+            const scoped = contextNode.nodeType !== Node.DOCUMENT_NODE;
+            const matched = evaluateXPathElements(selector, contextNode, scoped);
+            for (const element of matched) {
+              if (!seen.has(element)) {
+                seen.add(element);
+                nextContexts.push(element);
+              }
+            }
+          }
+
+          if (!nextContexts.length) {
+            return [] as Element[];
+          }
+
+          contexts = nextContexts;
+        }
+
+        return contexts.filter(
+          (node): node is Element => node.nodeType === Node.ELEMENT_NODE,
+        );
+      };
+
+      const buildAbsoluteXPath = (element: Element) => {
+        const parts: string[] = [];
+        let current: Element | null = element;
+
+        while (current && current.nodeType === Node.ELEMENT_NODE) {
+          const tagName = current.tagName.toLowerCase();
+          let index = 1;
+          let sibling = current.previousElementSibling;
+          while (sibling) {
+            if (sibling.tagName === current.tagName) {
+              index += 1;
+            }
+            sibling = sibling.previousElementSibling;
+          }
+          parts.unshift(`${tagName}[${index}]`);
+          current = current.parentElement;
+        }
+
+        return `/${parts.join('/')}`;
+      };
+
+      const buildRelativeXPath = (element: Element, scopeRoot: Element) => {
+        if (element === scopeRoot) {
+          return './self::*';
+        }
+
+        const parts: string[] = [];
+        let current: Element | null = element;
+
+        while (current && current !== scopeRoot && current.nodeType === Node.ELEMENT_NODE) {
+          const tagName = current.tagName.toLowerCase();
+          let index = 1;
+          let sibling = current.previousElementSibling;
+          while (sibling) {
+            if (sibling.tagName === current.tagName) {
+              index += 1;
+            }
+            sibling = sibling.previousElementSibling;
+          }
+          parts.unshift(`${tagName}[${index}]`);
+          current = current.parentElement;
+        }
+
+        if (current !== scopeRoot) {
+          return null;
+        }
+
+        return `./${parts.join('/')}`;
+      };
+
+      const buildTextCandidate = (
+        element: Element,
+        scopeRoot?: Element,
+      ) => {
+        const tagName = element.tagName.toLowerCase();
+        const text = (
+          'innerText' in element
+            ? (element as HTMLElement).innerText
+            : element.textContent || ''
+        )
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 80);
+
+        if (!text || text.length > 40) {
+          return null;
+        }
+
+        if (scopeRoot) {
+          const xpath =
+            element === scopeRoot
+              ? `.[self::${tagName} and normalize-space(.)=${quoteXPathLiteral(text)}]`
+              : `.//${tagName}[normalize-space(.)=${quoteXPathLiteral(text)}]`;
+          return xpathCount(xpath, scopeRoot) === 1 ? xpath : null;
+        }
+
+        const xpath = `//${tagName}[normalize-space(.)=${quoteXPathLiteral(text)}]`;
+        return xpathCount(xpath) === 1 ? xpath : null;
+      };
+
+      const buildClassCandidate = (
+        element: Element,
+        scopeRoot?: Element,
+      ) => {
+        const tagName = element.tagName.toLowerCase();
+        const classNames = Array.from(element.classList)
+          .map((item) => item.trim())
+          .filter((item) => item.length >= 3 && item.length <= 40)
+          .slice(0, 2);
+
+        if (classNames.length === 0) {
+          return null;
+        }
+
+        const clauses = classNames.map(
+          (className) =>
+            `contains(concat(' ', normalize-space(@class), ' '), ' ${className} ')`,
+        );
+
+        if (scopeRoot) {
+          const xpath =
+            element === scopeRoot
+              ? `.[self::${tagName} and ${clauses.join(' and ')}]`
+              : `.//${tagName}[${clauses.join(' and ')}]`;
+          return xpathCount(xpath, scopeRoot) === 1 ? xpath : null;
+        }
+
+        const xpath = `//${tagName}[${clauses.join(' and ')}]`;
+        return xpathCount(xpath) === 1 ? xpath : null;
+      };
+
+      const buildAttributeCandidate = (
+        element: Element,
+        attributeName: string,
+        scopeRoot?: Element,
+      ) => {
+        const value = element.getAttribute(attributeName)?.trim();
+        if (!value) {
+          return null;
+        }
+
+        if (scopeRoot) {
+          const xpath =
+            element === scopeRoot
+              ? `.[@${attributeName}=${quoteXPathLiteral(value)}]`
+              : `.//*[@${attributeName}=${quoteXPathLiteral(value)}]`;
+          return xpathCount(xpath, scopeRoot) === 1 ? xpath : null;
+        }
+
+        const xpath = `//*[@${attributeName}=${quoteXPathLiteral(value)}]`;
+        return xpathCount(xpath) === 1 ? xpath : null;
+      };
+
+      const findClosestScopeRoot = (element: Element, candidates: Element[]) => {
+        if (!candidates.length) {
+          return null;
+        }
+
+        const candidateSet = new Set(candidates);
+        let current: Element | null = element;
+        while (current) {
+          if (candidateSet.has(current)) {
+            return current;
+          }
+          current = current.parentElement;
+        }
+
+        return null;
+      };
+
+      const element = choosePreferredElement(document.elementFromPoint(x, y));
+      if (!element) {
+        return null;
+      }
+
+      const absoluteCandidates: string[] = [];
+      const pushAbsoluteCandidate = (xpath: string | null) => {
+        if (!xpath || absoluteCandidates.includes(xpath)) {
+          return;
+        }
+        absoluteCandidates.push(xpath);
+      };
+
+      pushAbsoluteCandidate(buildAttributeCandidate(element, 'id'));
+      pushAbsoluteCandidate(buildAttributeCandidate(element, 'data-testid'));
+      pushAbsoluteCandidate(buildAttributeCandidate(element, 'name'));
+      pushAbsoluteCandidate(buildTextCandidate(element));
+      pushAbsoluteCandidate(buildClassCandidate(element));
+
+      const absoluteXPath = buildAbsoluteXPath(element);
+      pushAbsoluteCandidate(absoluteXPath);
+
+      const scopeRoot = findClosestScopeRoot(
+        element,
+        resolveScopeElements(scopeChain),
+      );
+
+      const relativeCandidates: string[] = [];
+      const pushRelativeCandidate = (xpath: string | null) => {
+        if (!xpath || relativeCandidates.includes(xpath)) {
+          return;
+        }
+        relativeCandidates.push(xpath);
+      };
+
+      if (scopeRoot) {
+        pushRelativeCandidate(buildAttributeCandidate(element, 'id', scopeRoot));
+        pushRelativeCandidate(buildAttributeCandidate(element, 'data-testid', scopeRoot));
+        pushRelativeCandidate(buildAttributeCandidate(element, 'name', scopeRoot));
+        pushRelativeCandidate(buildTextCandidate(element, scopeRoot));
+        pushRelativeCandidate(buildClassCandidate(element, scopeRoot));
+        pushRelativeCandidate(buildRelativeXPath(element, scopeRoot));
+      }
+
+      const rect = element.getBoundingClientRect();
+      const textPreview = (
+        'innerText' in element
+          ? (element as HTMLElement).innerText
+          : (element as Element).textContent || ''
+      )
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 120);
+
+      const absolutePrimaryXpath = absoluteCandidates[0] || absoluteXPath;
+      const relativePrimaryXpath = relativeCandidates[0] || undefined;
+      const recommendedCandidates = relativeCandidates.length
+        ? relativeCandidates
+        : absoluteCandidates;
+
+      return {
+        primaryXpath: relativePrimaryXpath || absolutePrimaryXpath,
+        candidateXpaths: recommendedCandidates,
+        absolutePrimaryXpath,
+        absoluteCandidateXpaths: absoluteCandidates,
+        relativePrimaryXpath,
+        relativeCandidateXpaths: relativeCandidates,
+        scopeMatched: Boolean(scopeRoot),
+        tagName: element.tagName.toLowerCase(),
+        textPreview,
+        attributes: {
+          id: element.getAttribute('id') || undefined,
+          className: element.getAttribute('class') || undefined,
+          name: element.getAttribute('name') || undefined,
+        },
+        rect: {
+          x: Math.max(0, rect.left),
+          y: Math.max(0, rect.top),
+          width: Math.max(0, rect.width),
+          height: Math.max(0, rect.height),
+        },
+      };
+    }, { x, y, scopeChain: normalizedScopeChain });
+
+    session.selected = selection;
+
+    return {
+      sessionId: session.id,
+      pageUrl: session.page.url(),
+      title: await session.page.title().catch(() => ''),
+      viewport: session.viewport,
+      selected: selection,
+    };
+  }
+
+  async performBrowserPickerAction(
+    sessionId: string,
+    action: 'refresh' | 'back' | 'click' | 'scroll_down',
+    amount?: number,
+  ) {
+    const session = await this.requireBrowserPickerSession(sessionId);
+
+    if (action === 'refresh') {
+      await session.page.reload({
+        waitUntil: 'domcontentloaded',
+        timeout: 15000,
+      });
+      await this.waitForPickerPageSettled(session.page);
+      session.selected = null;
+      return this.buildBrowserPickerSnapshot(session);
+    }
+
+    if (action === 'back') {
+      await session.page
+        .goBack({
+          waitUntil: 'domcontentloaded',
+          timeout: 15000,
+        })
+        .catch(() => undefined);
+      await this.waitForPickerPageSettled(session.page);
+      session.selected = null;
+      return this.buildBrowserPickerSnapshot(session);
+    }
+
+    if (action === 'scroll_down') {
+      await session.page.mouse.wheel(
+        0,
+        Math.max(200, Math.min(amount || 900, 4000)),
+      );
+      await session.page.waitForTimeout(350);
+      session.selected = null;
+      return this.buildBrowserPickerSnapshot(session);
+    }
+
+    if (!session.selected?.primaryXpath) {
+      throw new BadRequestException('请先选择一个元素');
+    }
+
+    const targetXpath =
+      session.selected.absolutePrimaryXpath || session.selected.primaryXpath;
+    const target = session.page.locator(`xpath=${targetXpath}`).first();
+    await target.scrollIntoViewIfNeeded().catch(() => undefined);
+    await target.waitFor({ state: 'visible', timeout: 5000 });
+    await target.click({ timeout: 5000 });
+    await this.waitForPickerPageSettled(session.page);
+    session.selected = null;
+    return this.buildBrowserPickerSnapshot(session);
   }
 
   /**
@@ -146,6 +1660,8 @@ export class TaskService {
     maxArea = 500000,
     targetAspectRatio = 1,
     tolerance = 0.3,
+    cookieOptions?: TaskCookieAccessOptions,
+    userId?: number,
   ): Promise<ResultItem[]> {
     if (!/^https?:\/\//.test(url)) {
       throw new BadRequestException('URL 格式不正确');
@@ -158,8 +1674,12 @@ export class TaskService {
       browser = stealth.browser;
       const page = stealth.page;
 
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      await page.waitForTimeout(2000);
+      const resolvedCookieOptions = await this.resolveTaskCookieOptions(
+        userId,
+        cookieOptions,
+      );
+      await this.applyTaskCookiesToPage(page, url, resolvedCookieOptions);
+      await this.navigatePreviewPage(page, url);
 
       const scrollStep = 1000;
       const maxScrollDistance = 8000;
@@ -401,13 +1921,22 @@ export class TaskService {
       return results;
     } catch (err) {
       this.logger.error('列表结构分析失败', err);
-      throw new InternalServerErrorException('列表结构分析失败');
+      throw this.createTaskOperationError(err, '列表结构分析失败', {
+        allowMissingBrowserHint: true,
+      });
     } finally {
       if (browser) await browser.close();
     }
   }
 
-  async parseByXpath(url: string, xpath: string, waitSelector?: string, contentFormat: 'text' | 'html' | 'markdown' | 'smart' = 'text') {
+  async parseByXpath(
+    url: string,
+    xpath: string,
+    waitSelector?: string,
+    contentFormat: 'text' | 'html' | 'markdown' | 'smart' = 'text',
+    cookieOptions?: TaskCookieAccessOptions,
+    userId?: number,
+  ) {
     if (
       waitSelector &&
       ['text', 'html', 'markdown', 'smart'].includes(waitSelector) &&
@@ -426,28 +1955,13 @@ export class TaskService {
       browser = stealth.browser;
       const page = stealth.page;
 
+      const resolvedCookieOptions = await this.resolveTaskCookieOptions(
+        userId,
+        cookieOptions,
+      );
+      await this.applyTaskCookiesToPage(page, url, resolvedCookieOptions);
       this.logger.debug(`Navigating to: ${url}`);
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-
-      // 等待额外时间让动态内容加载
-      await page.waitForTimeout(2000);
-
-      // 尝试等待网络空闲
-      try {
-        await page.waitForLoadState('networkidle', { timeout: 5000 });
-      } catch (e) {
-        this.logger.debug('Network idle timeout, continuing...');
-      }
-
-      if (waitSelector) {
-        this.logger.debug(`Waiting for selector: ${waitSelector}`);
-        await page
-          .waitForSelector(waitSelector, { timeout: 5000 })
-          .catch(() => null);
-      }
-
-      // 再次等待，确保动态内容加载完成
-      await page.waitForTimeout(1000);
+      await this.navigatePreviewPage(page, url, waitSelector);
 
       if (contentFormat === 'markdown' || contentFormat === 'smart') {
         const htmlPayload = await page.evaluate(({ xpath }) => {
@@ -521,25 +2035,13 @@ export class TaskService {
       const pageContentFormat =
         contentFormat as 'text' | 'html' | 'markdown' | 'smart';
 
-      const result = await page.evaluate(({ xpath, contentFormat }) => {
-        // 浏览器端日志，保留用于调试
-        if (typeof console !== 'undefined') {
-          console.log(`Evaluating XPath: ${xpath}`);
+      const helperSource = xpathPreviewDomHelpersFactory.toString();
+      const result = await page.evaluate(({ xpath, contentFormat, helperSource }) => {
+        const win = window as any;
+        if (typeof win.__taskXpathPreviewHelpersFactory !== 'function') {
+          win.__taskXpathPreviewHelpersFactory = (0, eval)(`(${helperSource})`);
         }
-        function getRelativeXPath(base: Element, el: Element): string {
-          const parts: string[] = [];
-          while (el && el !== base) {
-            let index = 1;
-            let sib = el.previousElementSibling;
-            while (sib) {
-              if (sib.tagName === el.tagName) index++;
-              sib = sib.previousElementSibling;
-            }
-            parts.unshift(`${el.tagName.toLowerCase()}[${index}]`);
-            el = el.parentElement!;
-          }
-          return './/' + parts.join('/');
-        }
+        const helpers = win.__taskXpathPreviewHelpersFactory();
 
         function isCssLike(text: string) {
           const t = text.trim();
@@ -631,18 +2133,88 @@ export class TaskService {
           console.log(`Looking for elements with XPath: ${xpath}`);
         }
 
-        const iterator = document.evaluate(
-          xpath,
-          document,
-          null,
-          XPathResult.ORDERED_NODE_ITERATOR_TYPE,
-          null,
-        );
-
-        let el = iterator.iterateNext() as HTMLElement | null;
+        const matchedElements = helpers.evaluateXPathAll(xpath, document) as HTMLElement[];
+        let currentIndex = 0;
+        let el = matchedElements[currentIndex] || null;
         // 浏览器端日志，保留用于调试
         if (typeof console !== 'undefined') {
           console.log(`First XPath result:`, el ? el.tagName : 'null');
+        }
+
+        const candidateResults: Array<{
+          xpath: string;
+          texts: any[];
+          images: any[];
+          links: any[];
+          score: number;
+        }> = [];
+
+        function getSuspiciousLinkPenalty(href: string): number {
+          if (!href) return 0;
+
+          try {
+            const target = new URL(href, window.location.href);
+            const host = target.hostname.toLowerCase();
+            const path = target.pathname.toLowerCase();
+            let penalty = 0;
+
+            if (/^(cm|ad|ads|track|tracker)\./i.test(host)) {
+              penalty += 35;
+            }
+
+            if (
+              /(advert|promotion|promo|track|tracker|landing|jump)/i.test(
+                `${host}${path}`,
+              )
+            ) {
+              penalty += 20;
+            }
+
+            if (target.origin !== window.location.origin) {
+              penalty += 10;
+            }
+
+            return penalty;
+          } catch {
+            return 0;
+          }
+        }
+
+        function scoreCandidate(
+          texts: any[],
+          images: any[],
+          links: any[],
+        ): number {
+          const richTexts = texts.filter(
+            (item) => String(item?.text || '').trim().length >= 6,
+          ).length;
+          const uniqueLinkCount = new Set(
+            links.map((item) => String(item?.href || '').trim()).filter(Boolean),
+          ).size;
+          const suspiciousPenalty = links.reduce(
+            (sum, item) => sum + getSuspiciousLinkPenalty(String(item?.href || '')),
+            0,
+          );
+
+          let score =
+            Math.min(texts.length, 8) * 8 +
+            Math.min(richTexts, 6) * 6 +
+            Math.min(images.length, 4) * 12 +
+            Math.min(uniqueLinkCount, 4) * 6;
+
+          if (images.length > 0 && uniqueLinkCount > 0) {
+            score += 18;
+          }
+
+          if (richTexts > 0 && uniqueLinkCount > 0) {
+            score += 12;
+          }
+
+          if (texts.length === 0 && images.length === 0 && uniqueLinkCount === 1) {
+            score -= 80;
+          }
+
+          return score - suspiciousPenalty;
         }
 
         while (el) {
@@ -651,6 +2223,11 @@ export class TaskService {
           const links: any[] = [];
 
           const tagName = el.tagName.toLowerCase();
+          const basePath =
+            el.children.length === 0
+              ? xpath
+              : helpers.buildRelativeXPath(document.body, el, matchedElements);
+          const selfPath = './self::*';
 
           // 智能检测内容类型
           function detectContentType(element: HTMLElement): 'article' | 'list' | 'mixed' | 'simple' {
@@ -733,10 +2310,7 @@ export class TaskService {
           }
           if (selfText && !isCssLike(selfText)) {
             texts.push({
-              xpath:
-                el.children.length === 0
-                  ? xpath
-                  : getRelativeXPath(document.body, el),
+              xpath: selfPath,
               text: selfText,
               tag: tagName,
             });
@@ -745,10 +2319,7 @@ export class TaskService {
           // 节点自身链接
           if (tagName === 'a' && (el as HTMLAnchorElement).href) {
             links.push({
-              xpath:
-                el.children.length === 0
-                  ? xpath
-                  : getRelativeXPath(document.body, el),
+              xpath: selfPath,
               href: (el as HTMLAnchorElement).href,
             });
           }
@@ -756,10 +2327,7 @@ export class TaskService {
           // 节点自身图片
           if (tagName === 'img' && (el as HTMLImageElement).src) {
             images.push({
-              xpath:
-                el.children.length === 0
-                  ? xpath
-                  : getRelativeXPath(document.body, el),
+              xpath: selfPath,
               src: (el as HTMLImageElement).src,
             });
           }
@@ -777,14 +2345,14 @@ export class TaskService {
 
               if (tag === 'img' && (child as HTMLImageElement).src) {
                 images.push({
-                  xpath: getRelativeXPath(el!, child),
+                  xpath: helpers.buildRelativeXPath(el!, child, matchedElements),
                   src: (child as HTMLImageElement).src,
                 });
               }
 
               if (tag === 'a' && (child as HTMLAnchorElement).href) {
                 links.push({
-                  xpath: getRelativeXPath(el!, child),
+                  xpath: helpers.buildRelativeXPath(el!, child, matchedElements),
                   href: (child as HTMLAnchorElement).href,
                 });
               }
@@ -793,7 +2361,7 @@ export class TaskService {
                 const t = child.textContent?.trim();
                 if (t && t.length >= 1 && !isCssLike(t)) {
                   texts.push({
-                    xpath: getRelativeXPath(el!, child),
+                    xpath: helpers.buildRelativeXPath(el!, child, matchedElements),
                     text: t,
                     tag,
                   });
@@ -807,36 +2375,54 @@ export class TaskService {
 
           // 命中节点自身或其子节点里只要有任意可提取内容，就视为有效匹配
           if (!hasCollectedContent) {
-            el = iterator.iterateNext() as HTMLElement | null;
+            currentIndex += 1;
+            el = matchedElements[currentIndex] || null;
             continue;
           }
 
-          // 返回第一个符合条件的元素
-          return {
-            xpath:
-              el.children.length === 0
-                ? xpath
-                : getRelativeXPath(document.body, el),
+          candidateResults.push({
+            xpath: basePath,
             texts,
             images,
             links,
-          };
+            score: scoreCandidate(texts, images, links),
+          });
+
+          currentIndex += 1;
+          el = matchedElements[currentIndex] || null;
         }
 
-        return null;
-      }, { xpath, contentFormat: pageContentFormat });
+        if (candidateResults.length === 0) {
+          return null;
+        }
+
+        candidateResults.sort((left, right) => right.score - left.score);
+        return {
+          xpath: candidateResults[0].xpath,
+          texts: candidateResults[0].texts,
+          images: candidateResults[0].images,
+          links: candidateResults[0].links,
+        };
+      }, { xpath, contentFormat: pageContentFormat, helperSource });
 
       if (!result) return { count: 0, items: null };
       return { count: 1, items: result };
     } catch (e) {
       this.logger.error('XPath 解析失败', e);
-      throw new InternalServerErrorException('XPath 解析失败');
+      throw this.createTaskOperationError(e, 'XPath 解析失败', {
+        allowMissingBrowserHint: true,
+      });
     } finally {
       if (browser) await browser.close();
     }
   }
 
-  async matchByXpath(url: string, xpath: string) {
+  async matchByXpath(
+    url: string,
+    xpath: string,
+    cookieOptions?: TaskCookieAccessOptions,
+    userId?: number,
+  ) {
     let browser: playwright.Browser | null = null;
 
     try {
@@ -844,7 +2430,12 @@ export class TaskService {
       browser = stealth.browser;
       const page = stealth.page;
 
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      const resolvedCookieOptions = await this.resolveTaskCookieOptions(
+        userId,
+        cookieOptions,
+      );
+      await this.applyTaskCookiesToPage(page, url, resolvedCookieOptions);
+      await this.navigatePreviewPage(page, url);
 
       return await page.evaluate((xp) => {
         const snapshot = document.evaluate(
@@ -869,14 +2460,23 @@ export class TaskService {
         };
       }, xpath);
     } catch (e) {
-      throw new InternalServerErrorException('XPath 匹配失败');
+      this.logger.error('XPath 匹配失败', e);
+      throw this.createTaskOperationError(e, 'XPath 匹配失败', {
+        allowMissingBrowserHint: true,
+      });
     } finally {
       if (browser) await browser.close();
     }
   }
 
-  // task.service.ts
-  async parseByXpathAll(url: string, xpath: string) {
+  async validateXpath(
+    url: string,
+    xpath: string,
+    baseXpath?: string,
+    sampleMode: 'list' | 'example' = 'list',
+    cookieOptions?: TaskCookieAccessOptions,
+    userId?: number,
+  ): Promise<XpathValidationResult> {
     let browser: playwright.Browser | null = null;
 
     try {
@@ -884,43 +2484,140 @@ export class TaskService {
       browser = stealth.browser;
       const page = stealth.page;
 
-      await page.goto(url, {
-        waitUntil: 'domcontentloaded',
-        timeout: 15000,
-      });
+      await this.injectXpathPreviewHelpers(page);
+      const resolvedCookieOptions = await this.resolveTaskCookieOptions(
+        userId,
+        cookieOptions,
+      );
+      await this.applyTaskCookiesToPage(page, url, resolvedCookieOptions);
+      await this.navigatePreviewPage(page, url);
 
-      const result = await page.evaluate((xpath) => {
-        function getRelativeXPath(base: Element, el: Element): string {
-          const parts: string[] = [];
-          while (el && el !== base) {
-            let index = 1;
-            let sib = el.previousElementSibling;
-            while (sib) {
-              if (sib.tagName === el.tagName) index++;
-              sib = sib.previousElementSibling;
+      const helperSource = xpathPreviewDomHelpersFactory.toString();
+      const relativeScoped = isRelativeScopedXPath(xpath);
+      return await page.evaluate(({ xpath, baseXpath, sampleMode, helperSource, relativeScoped }) => {
+        const win = window as any;
+        if (typeof win.__taskXpathPreviewHelpersFactory !== 'function') {
+          win.__taskXpathPreviewHelpersFactory = (0, eval)(`(${helperSource})`);
+        }
+        const helpers = win.__taskXpathPreviewHelpersFactory();
+
+        if (baseXpath && relativeScoped) {
+          const baseElements = helpers.evaluateXPathAll(baseXpath, document);
+          if (sampleMode === 'example') {
+            const exampleBaseElement = baseElements[0];
+            if (!exampleBaseElement) {
+              return {
+                scope: 'list',
+                status: 'empty_base',
+                baseCount: 0,
+                sampledBaseCount: 0,
+                matchedItemCount: 0,
+                zeroMatchCount: 0,
+                multiMatchCount: 0,
+                maxMatchCount: 0,
+                counts: [],
+                signatureSamples: [],
+                items: [],
+              };
             }
-            parts.unshift(`${el.tagName.toLowerCase()}[${index}]`);
-            el = el.parentElement!;
+
+            const matches = helpers.evaluateXPathAll(xpath, exampleBaseElement);
+            const exampleItem = {
+              index: 0,
+              matchCount: matches.length,
+              values: [...new Set(matches.map((match: Element) => helpers.getElementValue(match)).filter(Boolean))].slice(
+                0,
+                3,
+              ),
+              signatures: [],
+            };
+
+            return {
+              scope: 'list',
+              status:
+                exampleItem.matchCount === 0
+                  ? 'missing'
+                  : exampleItem.matchCount === 1
+                    ? 'stable'
+                    : 'ambiguous',
+              baseCount: baseElements.length,
+              sampledBaseCount: 1,
+              matchedItemCount: exampleItem.matchCount > 0 ? 1 : 0,
+              zeroMatchCount: exampleItem.matchCount === 0 ? 1 : 0,
+              multiMatchCount: exampleItem.matchCount > 1 ? 1 : 0,
+              maxMatchCount: exampleItem.matchCount,
+              counts: [exampleItem.matchCount],
+              signatureSamples: exampleItem.signatures,
+              items: [exampleItem],
+            };
           }
-          return './/' + parts.join('/');
+          return helpers.validateRelativeXPath(baseElements, xpath);
         }
 
-        const iterator = document.evaluate(
-          xpath,
-          document,
-          null,
-          XPathResult.ORDERED_NODE_ITERATOR_TYPE,
-          null,
+        const matches = helpers.evaluateXPathAll(xpath, document);
+        const samples = [...new Set(matches.map((match: Element) => helpers.getElementValue(match)).filter(Boolean))].slice(
+          0,
+          10,
         );
+        const signatureSamples: string[] = [];
 
-        const elements: HTMLElement[] = [];
-        let el = iterator.iterateNext() as HTMLElement | null;
-        while (el) {
-          elements.push(el);
-          el = iterator.iterateNext() as HTMLElement | null;
+        return {
+          scope: 'page',
+          status:
+            matches.length === 0
+              ? 'missing'
+              : matches.length === 1
+                ? 'stable'
+                : 'ambiguous',
+          count: matches.length,
+          samples,
+          signatureSamples,
+        };
+      }, { xpath, baseXpath, sampleMode, helperSource, relativeScoped });
+    } catch (e) {
+      this.logger.error('XPath 校验失败', e);
+      throw this.createTaskOperationError(e, 'XPath 校验失败', {
+        allowMissingBrowserHint: true,
+      });
+    } finally {
+      if (browser) await browser.close();
+    }
+  }
+
+  /**
+   * 提取 XPath 命中的所有基础节点及其子内容
+   */
+  async parseByXpathAll(
+    url: string,
+    xpath: string,
+    cookieOptions?: TaskCookieAccessOptions,
+    userId?: number,
+  ) {
+    let browser: playwright.Browser | null = null;
+
+    try {
+      const stealth = await createStealthPage(true);
+      browser = stealth.browser;
+      const page = stealth.page;
+
+      await this.injectXpathPreviewHelpers(page);
+      const resolvedCookieOptions = await this.resolveTaskCookieOptions(
+        userId,
+        cookieOptions,
+      );
+      await this.applyTaskCookiesToPage(page, url, resolvedCookieOptions);
+      await this.navigatePreviewPage(page, url);
+
+      const helperSource = xpathPreviewDomHelpersFactory.toString();
+      const result = await page.evaluate(({ xpath, helperSource }) => {
+        const win = window as any;
+        if (typeof win.__taskXpathPreviewHelpersFactory !== 'function') {
+          win.__taskXpathPreviewHelpersFactory = (0, eval)(`(${helperSource})`);
         }
+        const helpers = win.__taskXpathPreviewHelpersFactory();
+        const elements = helpers.evaluateXPathAll(xpath, document) as HTMLElement[];
 
-        const items = elements.map((baseEl) => {
+        const items = elements.map((baseEl: HTMLElement) => {
           const texts: any[] = [];
           const images: any[] = [];
           const links: any[] = [];
@@ -939,7 +2636,7 @@ export class TaskService {
             // 图片
             if (tag === 'img' && (el as HTMLImageElement).src) {
               images.push({
-                xpath: getRelativeXPath(baseEl, el),
+                xpath: helpers.buildRelativeXPath(baseEl, el, elements),
                 src: (el as HTMLImageElement).src,
               });
             }
@@ -947,7 +2644,7 @@ export class TaskService {
             // 链接
             if (tag === 'a' && (el as HTMLAnchorElement).href) {
               links.push({
-                xpath: getRelativeXPath(baseEl, el),
+                xpath: helpers.buildRelativeXPath(baseEl, el, elements),
                 href: (el as HTMLAnchorElement).href,
               });
             }
@@ -957,7 +2654,7 @@ export class TaskService {
               const text = el.textContent?.trim();
               if (text && text.length >= 1) {
                 texts.push({
-                  xpath: getRelativeXPath(baseEl, el),
+                  xpath: helpers.buildRelativeXPath(baseEl, el, elements),
                   text,
                   tag,
                 });
@@ -966,7 +2663,7 @@ export class TaskService {
           });
 
           return {
-            xpath: getRelativeXPath(document.body, baseEl),
+            xpath: helpers.buildRelativeXPath(document.body, baseEl, elements),
             texts,
             images,
             links,
@@ -974,271 +2671,17 @@ export class TaskService {
         });
 
         return items;
-      }, xpath);
+      }, { xpath, helperSource });
 
       return {
         count: result.length,
         items: result,
       };
     } catch (e) {
-      throw new InternalServerErrorException('XPath 解析失败');
-    } finally {
-      if (browser) await browser.close();
-    }
-  }
-
-  // task.service.ts
-  async parseByJsPath(
-    url: string,
-    jsPath: string,
-    waitSelector?: string,
-    contentFormat: 'text' | 'html' | 'markdown' | 'smart' = 'text',
-  ): Promise<{ count: number; items: ParseResult | null }> {
-    let browser: playwright.Browser | null = null;
-
-    try {
-      const stealth = await createStealthPage(false);
-      browser = stealth.browser;
-      const page = stealth.page;
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-
-      // 可选等待选择器
-      if (waitSelector) {
-        await page
-          .waitForSelector(waitSelector, { timeout: 10000 })
-          .catch(() => null);
-      }
-
-      // 滚动触发懒加载
-      await page.evaluate(async () => {
-        const distance = 2000;
-        const delay = 2000;
-        const maxScroll = 10000;
-        let total = 0;
-
-        while (total < maxScroll) {
-          window.scrollBy(0, distance);
-          total += distance;
-          await new Promise((res) => setTimeout(res, delay));
-        }
+      this.logger.error('XPath 解析全部节点失败', e);
+      throw this.createTaskOperationError(e, 'XPath 解析失败', {
+        allowMissingBrowserHint: true,
       });
-
-      let elementHandle: playwright.ElementHandle<HTMLElement> | null = null;
-
-      // 检查是否是我们的增强JSPath语法
-      if (jsPath.startsWith('(() => {') && jsPath.endsWith('})()')) {
-        // 处理我们自定义的Shadow DOM语法
-        const result = await page.evaluate(jsPath);
-        const elements = Array.isArray(result) ? result : [result];
-
-        if (!elements || elements.length === 0 || !elements[0]) {
-          return { count: 0, items: null };
-        }
-
-        // 假设结果是元素数组，取第一个
-        elementHandle = elements[0] as any;
-      } else {
-        // 原有的JSPath解析逻辑
-      const selectorRegex = /document\.querySelector\(["'](.+?)["']\)/g;
-      const selectors: string[] = [];
-      let match: RegExpExecArray | null;
-      while ((match = selectorRegex.exec(jsPath)) !== null) {
-        selectors.push(match[1]);
-      }
-      if (!selectors.length) return { count: 0, items: null };
-
-      // 第 0 层 host
-        elementHandle = (await page.waitForSelector(selectors[0], {
-          timeout: 10000,
-        })) as playwright.ElementHandle<HTMLElement> | null;
-
-      // 逐层 shadowRoot 查询
-      for (let i = 1; i < selectors.length; i++) {
-        if (!elementHandle) break;
-        elementHandle = (await elementHandle.evaluateHandle(
-          (el, sel) => el.shadowRoot?.querySelector(sel) ?? null,
-          selectors[i],
-        )) as playwright.ElementHandle<HTMLElement> | null;
-        }
-      }
-
-      if (!elementHandle) return { count: 0, items: null };
-
-      if (contentFormat === 'markdown' || contentFormat === 'smart') {
-        const htmlPayload = await elementHandle.evaluate((root: HTMLElement) => ({
-          tag: root.tagName.toLowerCase(),
-          html: root.outerHTML || root.innerHTML || '',
-        }));
-
-        if (!htmlPayload?.html) {
-          return { count: 0, items: null };
-        }
-
-        const markdown = formatHtmlFragment(
-          htmlPayload.html,
-          contentFormat,
-          page.url(),
-        );
-
-        if (!markdown) {
-          return { count: 0, items: null };
-        }
-
-        return {
-          count: 1,
-          items: {
-            basePath: '',
-            texts: [
-              {
-                xpath: '',
-                text: markdown,
-                tag: htmlPayload.tag,
-              },
-            ],
-            images: [],
-            links: [],
-          },
-        };
-      }
-
-      // 提取文本 / 图片 / 链接
-      const result = await elementHandle.evaluate((root: HTMLElement, contentFormat: string) => {
-        // 使用 turndown 进行 markdown 转换
-        function convertElementToMarkdown(element: HTMLElement): string {
-          // 检查 turndown 是否已加载
-          if (typeof (window as any).TurndownService === 'undefined') {
-            console.error('TurndownService is not available');
-            // 降级到简单文本提取
-            return element.textContent?.trim() || '';
-          }
-
-          try {
-            const turndownService = new (window as any).TurndownService({
-              headingStyle: 'atx',
-              codeBlockStyle: 'fenced',
-              bulletListMarker: '-',
-              emDelimiter: '*',
-              strongDelimiter: '**',
-            });
-
-            // 转换 HTML 为 Markdown
-            const markdown = turndownService.turndown(element.outerHTML || element.innerHTML);
-            return markdown.trim();
-          } catch (error) {
-            console.error('Markdown conversion error:', error);
-            // 降级到简单文本提取
-            return element.textContent?.trim() || '';
-          }
-        }
-
-        // 如果是markdown格式，直接转换整个元素为markdown
-        if (contentFormat === 'markdown') {
-          const markdownContent = convertElementToMarkdown(root);
-          if (!markdownContent) {
-            return null;
-          }
-
-          return {
-            basePath: '',
-            texts: [{
-              xpath: '',
-              text: markdownContent,
-              tag: root.tagName.toLowerCase(),
-            }],
-            images: [],
-            links: [],
-          };
-        }
-
-        // 普通处理逻辑
-        const texts: NodeItem[] = [];
-        const images: NodeItem[] = [];
-        const links: NodeItem[] = [];
-
-        function getRelativeXPath(base: Element, el: Element): string {
-          const parts: string[] = [];
-          while (el && el !== base) {
-            let index = 1;
-            let sib = el.previousElementSibling;
-            while (sib) {
-              if (sib.tagName === el.tagName) index++;
-              sib = sib.previousElementSibling;
-            }
-            parts.unshift(`${el.tagName.toLowerCase()}[${index}]`);
-            el = el.parentElement!;
-          }
-          return './/' + parts.join('/');
-        }
-
-        function isCssLike(text: string) {
-          const t = text.trim();
-          if (!t) return false;
-          const hasBraces = /{[^}]*}/.test(t);
-          const hasCssProp =
-            /(color|font|margin|padding|display|position|width|height|background|border)\s*:/i.test(
-              t,
-            );
-          const startsSelector = /^[.#][\w-]+\s*[{:]/.test(t);
-          const manySemicolons = t.split(';').length >= 3;
-          return (
-            hasBraces || (hasCssProp && (startsSelector || manySemicolons))
-          );
-        }
-
-        function traverse(node: HTMLElement) {
-          const tag = node.tagName.toLowerCase();
-          const ignoreTags = ['script', 'style', 'noscript', 'template'];
-          if (ignoreTags.includes(tag)) return;
-
-          let t: string | null = null;
-          if (contentFormat === 'text') {
-            t = node.textContent?.trim() || null;
-          } else if (contentFormat === 'html') {
-            t = node.innerHTML?.trim() || null;
-          } else if (contentFormat === 'smart') {
-            // 智能提取模式
-            t = node.textContent?.trim() || null;
-          }
-          if (t && !isCssLike(t))
-            texts.push({
-              xpath: getRelativeXPath(document.body, node),
-              text: t,
-              tag,
-            });
-          if (tag === 'img' && (node as HTMLImageElement).src)
-            images.push({
-              xpath: getRelativeXPath(document.body, node),
-              src: (node as HTMLImageElement).src,
-            });
-          if (tag === 'a' && (node as HTMLAnchorElement).href)
-            links.push({
-              xpath: getRelativeXPath(document.body, node),
-              href: (node as HTMLAnchorElement).href,
-            });
-
-          // 遍历 children
-          for (const c of Array.from(node.children)) traverse(c as HTMLElement);
-
-          // 遍历 shadowRoot
-          const shadowRoot = (node as HTMLElement).shadowRoot;
-          if (shadowRoot) {
-            for (const c of Array.from(shadowRoot.children))
-              traverse(c as HTMLElement);
-          }
-        }
-
-        traverse(root);
-
-        if (texts.length === 0 && images.length === 0 && links.length === 0)
-          return null;
-        return { basePath: '', texts, images, links };
-      }, contentFormat);
-
-      if (!result) return { count: 0, items: null };
-      return { count: 1, items: result };
-    } catch (e) {
-      this.logger.error('JSPath 解析失败', e);
-      throw new InternalServerErrorException('JSPath 解析失败');
     } finally {
       if (browser) await browser.close();
     }
@@ -1253,9 +2696,18 @@ export class TaskService {
     userId?: number,
   ) {
     let task;
-    const normalizedCustomConfig = customConfig
-      ? (sanitizeTaskConfig(customConfig) as CrawleeTaskConfig)
+    const runtimeCustomConfig = customConfig
+      ? (sanitizeTaskConfig(customConfig, {
+          allowInlineCookieString: true,
+        }) as CrawleeTaskConfig)
       : undefined;
+    const persistedCustomConfig = runtimeCustomConfig
+      ? (sanitizeTaskConfig(runtimeCustomConfig, {
+          allowInlineCookieString: false,
+        }) as CrawleeTaskConfig)
+      : undefined;
+
+    this.ensureUnsafeCustomJsAllowed(runtimeCustomConfig, '任务配置');
 
     if (taskId) {
       // 使用现有任务
@@ -1279,11 +2731,12 @@ export class TaskService {
       const newTask = this.taskRepository.create({
         name: taskName,
         url: url,
-        config: normalizedCustomConfig
-          ? JSON.stringify(normalizedCustomConfig)
+        config: persistedCustomConfig
+          ? this.serializeTaskConfig(persistedCustomConfig)
           : '{}',
         status: 'pending',
-        user: { id: userId } as any, // 设置用户关联
+        userId,
+        user: { id: userId } as any, // 关联当前用户
       });
       task = await this.taskRepository.save(newTask);
 
@@ -1294,11 +2747,14 @@ export class TaskService {
         url: task.url,
         status: task.status,
         progress: 0,
+        folder: task.folder || null,
+        tags: task.tags || [],
+        isFavorite: Boolean(task.isFavorite),
         lastExecutionTime: null,
         createdAt: task.createdAt.toISOString(),
         endTime: task.endTime?.toISOString() || null,
         latestExecution: null,
-      });
+      }, task.userId ?? userId);
     }
 
     // 创建执行记录
@@ -1313,19 +2769,11 @@ export class TaskService {
     try {
       // 解析配置
       let config: CrawleeTaskConfig;
-      if (normalizedCustomConfig) {
-        config = normalizedCustomConfig;
+      if (runtimeCustomConfig) {
+        config = runtimeCustomConfig;
       } else if (task.config) {
-        config = JSON.parse(task.config);
-        // Normalize potential nested wrappers like { config: { ... } }
-        // This helps support payloads like:
-        // { "name": "...", "url": "...", "config": { "name": "...", "urls": [...] } }
-        if (config && typeof config === 'object') {
-          const anyConfig: any = config as any;
-          if (anyConfig.config && typeof anyConfig.config === 'object') {
-            config = anyConfig.config as CrawleeTaskConfig;
-          }
-        }
+        config = this.parseTaskConfig(task.config, true) as CrawleeTaskConfig;
+        await this.maybePersistRedactedTaskConfig(task, config);
       } else {
         throw new BadRequestException('任务配置为空');
       }
@@ -1335,11 +2783,19 @@ export class TaskService {
         config = { ...config, ...overrideConfig };
       }
 
-      config = sanitizeTaskConfig(config) as CrawleeTaskConfig;
+      config = sanitizeTaskConfig(config, {
+        allowInlineCookieString: true,
+      }) as CrawleeTaskConfig;
+      this.ensureUnsafeCustomJsAllowed(config, '任务配置');
+      config = await this.resolveTaskRuntimeConfig(
+        config,
+        task.userId ?? userId,
+        task.url,
+      );
 
-      // 设置默认值 - 默认使用PlaywrightCrawler
+      // 补齐默认配置，默认使用 PlaywrightCrawler
       const defaultConfig: CrawleeTaskConfig = {
-        crawlerType: 'playwright', // 默认为PlaywrightCrawler
+        crawlerType: 'playwright', // 默认使用 PlaywrightCrawler
         urls: [task.url],
         maxRequestsPerCrawl: 1,
         maxConcurrency: 1,
@@ -1354,6 +2810,7 @@ export class TaskService {
       };
 
       config = { ...defaultConfig, ...config };
+      await this.storeExecutionRuntimeCookie(execution.id, config);
 
       // 将任务添加到Crawlee引擎队列
       await this.crawleeEngineService.addTaskToQueue({
@@ -1374,16 +2831,33 @@ export class TaskService {
       execution.log = `执行失败: ${error.message}`;
       await this.executionRepository.save(execution);
 
+      await this.notificationService.createTaskExecutionNotification({
+        userId,
+        taskId: task.id,
+        taskName: task.name,
+        executionId: execution.id,
+        status: 'failed',
+        log: execution.log,
+      });
+
+      if (error instanceof HttpException) {
+        throw error;
+      }
+
       throw new InternalServerErrorException(`任务执行失败: ${error.message}`);
     }
   }
 
-  // 获取爬虫引擎状态
+  /**
+   * 获取爬虫引擎状态
+   */
   getCrawlerEngineStatus() {
     return this.crawleeEngineService.getQueueStatus();
   }
 
-  // 计算任务进度
+  /**
+   * 根据状态和执行日志推断任务进度
+   */
   private calculateProgress(status: string, log?: string): number {
     if (status === 'success') {
       return 100;
@@ -1395,6 +2869,17 @@ export class TaskService {
 
     if (status === 'pending') {
       return 0;
+    }
+
+    if (status === 'stopping') {
+      if (log) {
+        const percentMatch = log.match(/(\d+)%/);
+        if (percentMatch) {
+          return Math.max(80, Math.min(parseInt(percentMatch[1]), 99));
+        }
+      }
+
+      return 95;
     }
 
     if (status === 'running') {
@@ -1434,16 +2919,7 @@ export class TaskService {
       throw new BadRequestException('任务不存在或无权限访问');
     }
 
-    // 删除相关的执行记录
-    await this.executionRepository.delete({ task: { id: taskId } });
-
-    // 删除任务
-    await this.taskRepository.delete(taskId);
-
-    // 广播任务删除消息
-    this.taskGateway.broadcastTaskDeleted(taskId, task.name, task.url);
-
-    return { message: '任务删除成功' };
+    return this.removeTaskAndArtifacts(task, userId);
   }
 
   async deleteTaskByNameAndUrl(taskName: string, taskUrl: string, userId: number) {
@@ -1460,69 +2936,241 @@ export class TaskService {
       throw new BadRequestException('任务不存在或无权限访问');
     }
 
-    // 获取相关的执行记录（用于删除结果文件）
+    return this.removeTaskAndArtifacts(task, userId);
+  }
+
+  private async removeTaskAndArtifacts(task: Task, userId: number) {
+    const fs = require('fs').promises;
+
     const executions = await this.executionRepository.find({
       where: { taskId: task.id },
-      select: ['resultPath'],
+      select: ['id', 'resultPath'],
     });
 
-    // 删除结果文件
-    const fs = require('fs').promises;
     for (const execution of executions) {
-      if (execution.resultPath) {
-        try {
-          await fs.unlink(execution.resultPath);
-          this.logger.log(`删除结果文件: ${execution.resultPath}`);
-        } catch (error) {
-          this.logger.warn(`删除结果文件失败: ${execution.resultPath}`, error);
-        }
+      if (!execution.resultPath) {
+        continue;
+      }
+
+      try {
+        await fs.unlink(execution.resultPath);
+        this.logger.log(`删除结果文件: ${execution.resultPath}`);
+      } catch (error) {
+        this.logger.warn(`删除结果文件失败: ${execution.resultPath}`, error);
       }
     }
 
-    // 删除截图文件
     if (task.screenshotPath) {
+      const screenshotFullPath = `uploads/${task.screenshotPath}`;
       try {
-        const screenshotFullPath = `uploads/${task.screenshotPath}`;
         await fs.unlink(screenshotFullPath);
         this.logger.log(`删除截图文件: ${screenshotFullPath}`);
       } catch (error) {
-        this.logger.warn(`删除截图文件失败: uploads/${task.screenshotPath}`, error);
+        this.logger.warn(`删除截图文件失败: ${screenshotFullPath}`, error);
       }
     }
 
-    // 删除相关的执行记录
     await this.executionRepository.delete({ taskId: task.id });
-
-    // 删除任务
     await this.taskRepository.delete(task.id);
 
-    // 广播任务删除消息
-    this.taskGateway.broadcastTaskDeleted(task.id, task.name, task.url);
+    this.taskGateway.broadcastTaskDeleted(task.id, task.name, task.url, userId);
 
     return { message: '任务删除成功' };
+  }
+
+  async updateTaskOrganization(
+    taskId: number,
+    userId: number,
+    organization: {
+      folder?: string | null;
+      tags?: string[];
+      isFavorite?: boolean;
+    },
+  ) {
+    const task = await this.taskRepository.findOne({
+      where: { id: taskId, userId },
+    });
+
+    if (!task) {
+      throw new BadRequestException('任务不存在或无权限访问');
+    }
+
+    if (Object.prototype.hasOwnProperty.call(organization, 'folder')) {
+      task.folder = this.normalizeFolder(organization.folder);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(organization, 'tags')) {
+      task.tags = this.normalizeTags(organization.tags);
+    }
+
+    if (typeof organization.isFavorite === 'boolean') {
+      task.isFavorite = organization.isFavorite;
+    }
+
+    const savedTask = await this.taskRepository.save(task);
+
+    return {
+      id: savedTask.id,
+      folder: savedTask.folder || null,
+      tags: savedTask.tags || [],
+      isFavorite: Boolean(savedTask.isFavorite),
+    };
+  }
+
+  async getTaskOrganizationOptions(userId: number) {
+    const tasks = await this.taskRepository.find({
+      where: { userId },
+      select: ['id', 'folder', 'tags', 'isFavorite'],
+    });
+
+    const folders = Array.from(
+      new Set(
+        tasks
+          .map((task) => this.normalizeFolder(task.folder))
+          .filter((value): value is string => Boolean(value)),
+      ),
+    ).sort((left, right) => left.localeCompare(right, 'zh-CN'));
+
+    const tags = Array.from(
+      new Set(
+        tasks.flatMap((task) => this.normalizeTags(task.tags)),
+      ),
+    ).sort((left, right) => left.localeCompare(right, 'zh-CN'));
+
+    return {
+      folders,
+      tags,
+      favoriteCount: tasks.filter((task) => task.isFavorite).length,
+    };
+  }
+
+  async getWorkspaceOverview(userId: number) {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const tomorrowStart = new Date(todayStart);
+    tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+
+    const queueStatus = this.crawleeEngineService.getQueueStatus();
+
+    const [
+      totalTasks,
+      successTasks,
+      failedTasks,
+      runningTasks,
+      todayExecutions,
+      todaySuccessExecutions,
+      todayFailedExecutions,
+      recentFailedExecutions,
+      pendingExceptions,
+      organizationOptions,
+    ] = await Promise.all([
+      this.taskRepository.count({ where: { userId } }),
+      this.taskRepository.count({ where: { userId, status: 'success' } }),
+      this.taskRepository.count({ where: { userId, status: 'failed' } }),
+      this.taskRepository
+        .createQueryBuilder('task')
+        .where('task.userId = :userId', { userId })
+        .andWhere('task.status IN (:...statuses)', {
+          statuses: ['running', 'stopping'],
+        })
+        .getCount(),
+      this.executionRepository
+        .createQueryBuilder('execution')
+        .leftJoin('execution.task', 'task')
+        .where('task.userId = :userId', { userId })
+        .andWhere('execution.startTime >= :todayStart', { todayStart })
+        .andWhere('execution.startTime < :tomorrowStart', { tomorrowStart })
+        .getCount(),
+      this.executionRepository
+        .createQueryBuilder('execution')
+        .leftJoin('execution.task', 'task')
+        .where('task.userId = :userId', { userId })
+        .andWhere('execution.status = :status', { status: 'success' })
+        .andWhere('execution.startTime >= :todayStart', { todayStart })
+        .andWhere('execution.startTime < :tomorrowStart', { tomorrowStart })
+        .getCount(),
+      this.executionRepository
+        .createQueryBuilder('execution')
+        .leftJoin('execution.task', 'task')
+        .where('task.userId = :userId', { userId })
+        .andWhere('execution.status = :status', { status: 'failed' })
+        .andWhere('execution.startTime >= :todayStart', { todayStart })
+        .andWhere('execution.startTime < :tomorrowStart', { tomorrowStart })
+        .getCount(),
+      this.executionRepository
+        .createQueryBuilder('execution')
+        .leftJoinAndSelect('execution.task', 'task')
+        .where('task.userId = :userId', { userId })
+        .andWhere('execution.status = :status', { status: 'failed' })
+        .orderBy('execution.startTime', 'DESC')
+        .take(5)
+        .getMany(),
+      this.notificationService.getPendingExceptions(userId, 5),
+      this.getTaskOrganizationOptions(userId),
+    ]);
+
+    return {
+      runtime: {
+        totalTasks,
+        runningTasks,
+        successTasks,
+        failedTasks,
+        queueLength: queueStatus.queueLength,
+        isProcessing: queueStatus.isProcessing,
+        queuedTasks: queueStatus.queuedTasks,
+      },
+      today: {
+        executions: todayExecutions,
+        success: todaySuccessExecutions,
+        failed: todayFailedExecutions,
+      },
+      recentFailedTasks: recentFailedExecutions.map((execution) => ({
+        executionId: execution.id,
+        taskId: execution.taskId,
+        taskName: execution.task?.name || `任务 #${execution.taskId}`,
+        taskUrl: execution.task?.url || '',
+        log: execution.log || '',
+        startTime: execution.startTime,
+        endTime: execution.endTime,
+      })),
+      pendingExceptions,
+      organization: {
+        folders: organizationOptions.folders.length,
+        tags: organizationOptions.tags.length,
+        favorites: organizationOptions.favoriteCount,
+      },
+    };
   }
 
   async getTaskList(
     userId: number,
     options: {
-      page: number;
-      limit: number;
+      page?: number;
+      limit?: number;
       search?: string;
+      folder?: string;
+      tag?: string;
+      favoriteOnly?: boolean;
     },
   ) {
-    const { page, limit, search } = options;
+    const {
+      page = 1,
+      limit = 10,
+      search,
+      folder,
+      tag,
+      favoriteOnly,
+    } = options;
     const skip = (page - 1) * limit;
 
-    // 构建查询条件
     const queryBuilder = this.taskRepository
       .createQueryBuilder('task')
-      .leftJoinAndSelect('task.user', 'user')
-      .where('task.user.id = :userId', { userId })
-      .orderBy('task.createdAt', 'DESC') // 改为按创建时间排序
+      .where('task.userId = :userId', { userId })
+      .orderBy('task.createdAt', 'DESC')
       .skip(skip)
       .take(limit);
 
-    // 添加搜索条件
     if (search) {
       queryBuilder.andWhere(
         '(task.name LIKE :search OR task.url LIKE :search)',
@@ -1530,10 +3178,21 @@ export class TaskService {
       );
     }
 
-    // 获取任务列表
+    if (folder) {
+      queryBuilder.andWhere('task.folder = :folder', { folder });
+    }
+
+    if (tag) {
+      const tagPattern = `%\"${tag.replace(/"/g, '\\"')}\"%`;
+      queryBuilder.andWhere('task.tags LIKE :tagPattern', { tagPattern });
+    }
+
+    if (favoriteOnly) {
+      queryBuilder.andWhere('task.isFavorite = :isFavorite', { isFavorite: true });
+    }
+
     const [tasks, total] = await queryBuilder.getManyAndCount();
 
-    // 为每个任务获取最新的执行记录
     const taskIds = tasks.map(task => task.id);
     let latestExecutions: any[] = [];
     if (taskIds.length > 0) {
@@ -1544,7 +3203,6 @@ export class TaskService {
         .getMany();
     }
 
-    // 创建执行记录的Map，按任务ID分组
     const executionsByTaskId = new Map<number, typeof latestExecutions[0]>();
     for (const execution of latestExecutions) {
       if (!executionsByTaskId.has(execution.taskId)) {
@@ -1552,43 +3210,43 @@ export class TaskService {
       }
     }
 
-    // 构建返回数据
     const taskList = tasks.map(task => {
       const latestExecution = executionsByTaskId.get(task.id);
 
-      // 计算任务状态
       let status = task.status;
       let progress = 0;
       let lastExecutionTime: Date | null = null;
 
       if (latestExecution) {
-        // 如果有执行记录，使用执行记录的状态
         status = latestExecution.status;
         lastExecutionTime = latestExecution.startTime;
-
-        // 计算进度（根据执行日志智能计算）
         progress = this.calculateProgress(status, latestExecution.log);
       }
 
       return {
-        id: task.id, // 添加ID字段用于前端唯一标识
+        id: task.id,
         name: task.name,
         url: task.url,
         status,
         progress,
-        config: task.config,
+        config: task.config
+          ? this.serializeTaskConfig(this.parseTaskConfig(task.config, false))
+          : undefined,
         script: task.script,
+        folder: task.folder || null,
+        tags: task.tags || [],
+        isFavorite: Boolean(task.isFavorite),
         lastExecutionTime,
         createdAt: task.createdAt,
-        endTime: task.endTime, // 改为 endTime
+        endTime: task.endTime,
         screenshotPath: task.screenshotPath,
         latestExecution: latestExecution ? {
-          id: latestExecution.id, // 添加执行ID，用于打包等操作
+          id: latestExecution.id,
           status: latestExecution.status,
           log: latestExecution.log,
           startTime: latestExecution.startTime,
           endTime: latestExecution.endTime,
-          resultPath: latestExecution.resultPath, // 添加结果文件路径
+          resultPath: latestExecution.resultPath,
         } : null,
       };
     });
@@ -1600,6 +3258,11 @@ export class TaskService {
         limit,
         total,
         totalPages: Math.ceil(total / limit),
+      },
+      filters: {
+        folder: folder || null,
+        tag: tag || null,
+        favoriteOnly: Boolean(favoriteOnly),
       },
     };
   }
@@ -1705,21 +3368,25 @@ export class TaskService {
       const packageDir = path.dirname(packagePath);
       await fs.mkdir(packageDir, { recursive: true });
 
-      let taskConfig: Partial<CrawleeTaskConfig> = {};
-      if (execution.task.config) {
-        try {
-          taskConfig = sanitizeTaskConfig(
-            JSON.parse(execution.task.config),
-          ) as Partial<CrawleeTaskConfig>;
-        } catch (parseError) {
-          this.logger.warn(
-            `解析任务配置失败，打包下载将忽略 Cookie: ${
-              parseError instanceof Error
-                ? parseError.message
-                : String(parseError)
-            }`,
-          );
-        }
+      let taskConfig = this.parseTaskConfig(
+        execution.task.config,
+        false,
+      ) as Partial<CrawleeTaskConfig>;
+      const executionRuntimeCookie = this.resolveExecutionRuntimeCookie(execution);
+
+      if (executionRuntimeCookie.useCookie && !taskConfig.cookieCredentialId) {
+        taskConfig = {
+          ...taskConfig,
+          ...executionRuntimeCookie,
+        };
+      }
+
+      if (taskConfig.useCookie && !taskConfig.cookieString) {
+        taskConfig = await this.resolveTaskRuntimeConfig(
+          taskConfig as CrawleeTaskConfig,
+          userId,
+          execution.task.url,
+        );
       }
 
       // 调用打包服务
@@ -1741,7 +3408,10 @@ export class TaskService {
 
       return packagePath;
     } catch (error) {
-      if (error instanceof BadRequestException) {
+      if (
+        error instanceof BadRequestException ||
+        error instanceof NotFoundException
+      ) {
         throw error;
       }
       throw new InternalServerErrorException(`打包失败: ${error.message}`);
@@ -1772,7 +3442,7 @@ export class TaskService {
       // 计算基础统计
       const totalTasks = tasks.length;
       const successTasks = tasks.filter(task => task.status === 'success').length;
-      const runningTasks = tasks.filter(task => task.status === 'running').length;
+      const runningTasks = tasks.filter(task => ['running', 'stopping'].includes(task.status)).length;
       const failedTasks = tasks.filter(task => task.status === 'failed').length;
       const successRate = totalTasks > 0 ? Math.round((successTasks / totalTasks) * 100) : 0;
 
@@ -1998,6 +3668,25 @@ export class TaskService {
     ].filter(item => item.value > 0);
   }
 
+  private normalizeFolder(folder?: string | null) {
+    const normalized = String(folder ?? '').trim();
+    return normalized || null;
+  }
+
+  private normalizeTags(tags?: string[] | null) {
+    if (!Array.isArray(tags)) {
+      return [];
+    }
+
+    return Array.from(
+      new Set(
+        tags
+          .map((tag) => String(tag ?? '').trim())
+          .filter(Boolean),
+      ),
+    ).slice(0, 12);
+  }
+
   private async getResultCount(resultPath: string | null): Promise<number> {
     if (!resultPath) return 0;
 
@@ -2022,5 +3711,23 @@ export class TaskService {
     }
 
     return 0;
+  }
+
+  private ensureUnsafeCustomJsAllowed(
+    config:
+      | Partial<CrawleeTaskConfig>
+      | Record<string, unknown>
+      | null
+      | undefined,
+    sourceLabel: string,
+  ) {
+    const unsafeFeatures = listUnsafeCustomJsFeatures(config);
+    if (unsafeFeatures.length === 0 || isUnsafeCustomJsEnabled()) {
+      return;
+    }
+
+    throw new BadRequestException(
+      `${sourceLabel}包含 ${unsafeFeatures.join('、')}，当前服务器已禁用自定义 JS。若确认部署环境可信，请显式设置 ALLOW_UNSAFE_CUSTOM_JS=true。`,
+    );
   }
 }

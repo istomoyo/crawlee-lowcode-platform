@@ -1,38 +1,46 @@
 import request from "./request";
 import type { TaskItem } from "@/types/task";
 
-// =======================
-// 页面截图
-// =======================
+export type { TaskItem } from "@/types/task";
+
 export interface ScreenshotRes {
   url: string;
   screenshotBase64: string;
 }
 
+export interface TaskDebugCookiePayload {
+  useCookie?: boolean;
+  cookieString?: string;
+  cookieDomain?: string;
+  cookieCredentialId?: number;
+}
+
 export function previewScreenshotApi(data: {
   url: string;
-}): Promise<ScreenshotRes> {
+} & TaskDebugCookiePayload): Promise<ScreenshotRes> {
   return request.post("/api/task/preview-screenshot", data);
 }
 
-// =======================
-// 列表自动识别
-// =======================
 export function listPreviewApi(data: {
   url: string;
   targetAspectRatio?: number;
   tolerance?: number;
-}): Promise<any> {
+} & TaskDebugCookiePayload): Promise<
+ 
+  Array<{
+    xpath: string;
+    base64: string;
+    selector: string;
+    matchCount: number;
+  }>
+> {
   return request.post("/api/task/list-preview", data);
 }
 
-// =======================
-// XPath 解析（文本 / 图片 / 链接）
-// =======================
 export interface XpathParseText {
   xpath: string;
   text: string;
-  type: string; // 可选：title / text 等
+  type: string;
   tag: string;
 }
 
@@ -55,20 +63,17 @@ export interface XpathParseItems {
 
 export interface XpathParseRes {
   count: number;
-  items: XpathParseItems; // ✅ 对象，不是数组
+  items: XpathParseItems;
 }
+
 export function xpathParseApi(data: {
   url: string;
   xpath: string;
   contentFormat?: "text" | "html" | "markdown" | "smart";
-}): Promise<XpathParseRes> {
+} & TaskDebugCookiePayload): Promise<XpathParseRes> {
   return request.post("/api/task/xpath-parse", data);
 }
 
-
-// =======================
-// XPath 匹配结果（只返回数量 + 文本样例）
-// =======================
 export interface XpathMatchRes {
   count: number;
   samples: string[];
@@ -77,23 +82,64 @@ export interface XpathMatchRes {
 export function xpathMatchApi(data: {
   url: string;
   xpath: string;
-}): Promise<XpathMatchRes> {
+} & TaskDebugCookiePayload): Promise<XpathMatchRes> {
   return request.post("/api/task/xpath-match", data);
 }
 
-export function jsPathParseApi(data:{
+export interface XpathValidateListItem {
+  index: number;
+  matchCount: number;
+  values: string[];
+}
+
+export interface XpathValidateRes {
+  scope: "page" | "list";
+  status: "stable" | "partial" | "ambiguous" | "missing" | "empty_base";
+  count?: number;
+  samples?: string[];
+  baseCount?: number;
+  sampledBaseCount?: number;
+  matchedItemCount?: number;
+  zeroMatchCount?: number;
+  multiMatchCount?: number;
+  maxMatchCount?: number;
+  counts?: number[];
+  items?: XpathValidateListItem[];
+}
+
+export function xpathValidateApi(data: {
+  url: string;
+  xpath: string;
+  baseXpath?: string;
+  sampleMode?: "list" | "example";
+} & TaskDebugCookiePayload): Promise<XpathValidateRes> {
+  return request.post("/api/task/xpath-validate", data);
+}
+
+export function jsPathParseApi(data: {
   url: string;
   jsPath: string;
   waitSelector?: string;
   contentFormat?: "text" | "html" | "markdown" | "smart";
-}): Promise<XpathParseRes> {
-  return request.post("/api/task/jspath-parse", data);
+} & TaskDebugCookiePayload): Promise<XpathParseRes> {
+  const jsPath = String(data.jsPath || "").trim();
+
+  if (jsPath.startsWith("/") || jsPath.startsWith(".//")) {
+    return xpathParseApi({
+      url: data.url,
+      xpath: jsPath,
+      contentFormat: data.contentFormat,
+      useCookie: data.useCookie,
+      cookieString: data.cookieString,
+      cookieDomain: data.cookieDomain,
+    });
+  }
+
+  return Promise.reject(
+    new Error("当前后端仅支持 XPath 解析，请改用 XPath 选择器。"),
+  );
 }
 
-
-// =======================
-// XPath 解析所有结果（返回数组）
-// =======================
 export interface XpathParseAllRes {
   count: number;
   items: XpathParseItems[];
@@ -102,43 +148,17 @@ export interface XpathParseAllRes {
 export function xpathParseAllApi(data: {
   url: string;
   xpath: string;
-}): Promise<XpathParseAllRes> {
+} & TaskDebugCookiePayload): Promise<XpathParseAllRes> {
   return request.post("/api/task/xpath-parse-all", data);
 }
 
-// =======================
-// Crawlee 爬虫任务执行
-// =======================
-
-// 页面交互配置：用于支持「先输入关键词」与「页面内筛选控件」两种场景
-export interface PageFilterCondition {
-  id: number;
-  label: string;
-  actionType: "click" | "select";
-  selectorType: "xpath" | "jsPath";
-  selector: string;
-  value?: string;
-}
-
-export interface PageInteractionConfig {
-  searchEnabled: boolean;
-  searchInputType: "xpath" | "jsPath";
-  searchInputSelector: string;
-  searchKeywordMode: "fixed" | "dynamic";
-  searchKeywordValue: string;
-  searchSubmitType: "enter" | "click";
-  searchSubmitSelector: string;
-  filters: PageFilterCondition[];
-}
-
 export interface PreActionConfig {
-  type: "click" | "wait_for_selector" | "wait_for_timeout";
-  selectorType?: "xpath" | "css";
+  type: "click" | "type" | "wait_for_selector" | "wait_for_timeout";
   selector?: string;
+  value?: string;
   timeout?: number;
 }
 
-// 结果过滤：在爬取完成后按字段值丢弃不符合条件的记录
 export type ResultFilterOperator =
   | "is_empty"
   | "is_not_empty"
@@ -168,14 +188,50 @@ export interface TaskNotificationConfig {
   previewCount?: number;
 }
 
+export type TaskMode = "simple";
+
+export interface SelectorConfig {
+  name: string;
+  selector: string;
+  type: "text" | "link" | "image";
+  multiple?: boolean;
+  required?: boolean;
+  contentFormat?: "text" | "html" | "markdown" | "smart";
+  detailBaseSelector?: string;
+  customTransformCode?: string;
+  parentLink?: string;
+  preActions?: PreActionConfig[];
+}
+
+export interface NestedSelectorConfig {
+  name: string;
+  selector: string;
+  type: "text" | "link" | "image";
+  multiple?: boolean;
+  required?: boolean;
+  contentFormat?: "text" | "html" | "markdown" | "smart";
+  customTransformCode?: string;
+  preActions?: PreActionConfig[];
+}
+
+export interface NestedExtractContext {
+  parentLink: string;
+  baseSelector: string;
+  listOutputKey?: string;
+  scroll?: { maxScroll: number; waitTime: number; maxItems: number };
+  next?: { selector: string; maxPages: number };
+  selectors: NestedSelectorConfig[];
+  maxDepth?: number;
+  preActions?: PreActionConfig[];
+}
+
 export interface CrawleeTaskConfig {
+  taskMode?: TaskMode;
   crawlerType: "playwright" | "cheerio" | "puppeteer";
   urls: string[];
   maxRequestsPerCrawl?: number;
   maxConcurrency?: number;
-  // 基础选择器：用于定位列表项（支持 XPath 或 CSS / JSPath）
   baseSelector?: string;
-  // 最大提取记录数（所有分页合计）
   maxItems?: number;
   headless?: boolean;
   viewport?: {
@@ -190,57 +246,21 @@ export interface CrawleeTaskConfig {
   useCookie?: boolean;
   cookieString?: string;
   cookieDomain?: string;
+  cookieCredentialId?: number;
   scrollEnabled?: boolean;
   scrollDistance?: number;
   scrollDelay?: number;
   maxScrollDistance?: number;
-  // 基于“下一页”按钮的分页配置（可选）
-  // 当前实现：每一页会先按 scrollEnabled 滚动，再根据 nextPageSelector 翻页，最多 maxPages 页
   nextPageSelector?: string;
   maxPages?: number;
   selectors?: SelectorConfig[];
-  /** 嵌套提取：详情页内列表（如评论）支持独立分页/滚动，最多 3 层 */
   nestedContexts?: NestedExtractContext[];
   userAgent?: string;
   datasetId?: string;
   keyValueStoreId?: string;
-  // 页面交互配置（可选）
-  // 提取前动作（可选）
   preActions?: PreActionConfig[];
-  // 结果过滤规则（可选）
   resultFilters?: ResultFilterRule[];
   notification?: TaskNotificationConfig;
-  // 自定义 JS 处理代码（可选），对每条记录执行
-  // 代码将作为函数体执行，入参为 item，必须 return：
-  // - 返回对象：作为新的 item
-  // - 返回 null/undefined/false：丢弃该条数据
-  // 结果筛选：自定义布尔函数（可选），入参 item，true 保留 false 丢弃
-}
-
-export interface NestedExtractContext {
-  parentLink: string;
-  baseSelector: string;
-  listOutputKey?: string;
-  scroll?: { maxScroll: number; waitTime: number; maxItems: number };
-  next?: { selector: string; maxPages: number };
-  selectors: SelectorConfig[];
-  maxDepth?: number;
-  preActions?: PreActionConfig[];
-}
-
-export interface SelectorConfig {
-  name: string;
-  selector: string;
-  type: "text" | "link" | "image";
-  multiple?: boolean;
-  required?: boolean;
-  contentFormat?: "text" | "html" | "markdown" | "smart";
-  detailBaseSelector?: string;
-  // 对该字段取值后的 JS 处理，入参 value，需 return 新值
-  customTransformCode?: string;
-  // Optional: used for navigating to child pages via an associated link
-  // (e.g., when a value on a list item points to a detail page)
-  parentLink?: string;
 }
 
 export interface ExecuteTaskReq {
@@ -253,15 +273,16 @@ export interface ExecuteTaskReq {
 
 export interface ExecuteTaskRes {
   executionId: number;
-  status: 'queued' | 'running' | 'success' | 'failed';
+  status: "queued" | "running" | "success" | "failed";
   message: string;
   queueStatus: {
     queueLength: number;
     isProcessing: boolean;
-    queuedTasks: {
+    queuedTasks: Array<{
       taskId: number;
       executionId: number;
-    }[];
+      status?: "running" | "queued";
+    }>;
   };
 }
 
@@ -269,27 +290,80 @@ export function executeTaskApi(data: ExecuteTaskReq): Promise<ExecuteTaskRes> {
   return request.post("/api/task/execute", data);
 }
 
-// =======================
-// 获取爬虫引擎状态
-// =======================
 export interface EngineStatusRes {
   queueLength: number;
   isProcessing: boolean;
-  queuedTasks: {
+  queuedTasks: Array<{
     taskId: number;
     executionId: number;
-  }[];
+    status?: "running" | "queued";
+  }>;
 }
 
 export function getEngineStatusApi(): Promise<EngineStatusRes> {
   return request.get("/api/task/engine-status");
 }
 
-// =======================
-// 获取任务列表
-// =======================
-// 导入统一的TaskItem类型
-export type { TaskItem } from "@/types/task";
+export interface WorkspaceOverview {
+  runtime: {
+    totalTasks: number;
+    runningTasks: number;
+    successTasks: number;
+    failedTasks: number;
+    queueLength: number;
+    isProcessing: boolean;
+    queuedTasks: Array<{
+      taskId: number;
+      executionId: number;
+      status?: "running" | "queued";
+    }>;
+  };
+  today: {
+    executions: number;
+    success: number;
+    failed: number;
+  };
+  recentFailedTasks: Array<{
+    executionId: number;
+    taskId: number;
+    taskName: string;
+    taskUrl: string;
+    log: string;
+    startTime: string;
+    endTime: string | null;
+  }>;
+  pendingExceptions: Array<{
+    id: number;
+    type: string;
+    level: "info" | "success" | "warning" | "error";
+    title: string;
+    content: string;
+    link?: string;
+    metadata?: Record<string, unknown>;
+    isRead: boolean;
+    readAt?: string | null;
+    createdAt: string;
+  }>;
+  organization: {
+    folders: number;
+    tags: number;
+    favorites: number;
+  };
+}
+
+export function getWorkspaceOverviewApi(): Promise<WorkspaceOverview> {
+  return request.get("/api/task/workspace-overview");
+}
+
+export interface TaskOrganizationOptions {
+  folders: string[];
+  tags: string[];
+  favoriteCount: number;
+}
+
+export function getTaskOrganizationOptionsApi(): Promise<TaskOrganizationOptions> {
+  return request.get("/api/task/organization-options");
+}
 
 export interface TaskListRes {
   data: TaskItem[];
@@ -299,41 +373,195 @@ export interface TaskListRes {
     total: number;
     totalPages: number;
   };
+  filters?: {
+    folder?: string | null;
+    tag?: string | null;
+    favoriteOnly?: boolean;
+  };
 }
 
 export function getTaskListApi(params?: {
   page?: number;
   limit?: number;
   search?: string;
+  folder?: string;
+  tag?: string;
+  favoriteOnly?: boolean;
 }): Promise<TaskListRes> {
   return request.get("/api/task/list", { params });
 }
 
-// =======================
-// 删除任务
-// =======================
-export function deleteTaskApi(taskData: { name: string; url: string }): Promise<{ message: string }> {
-  return request.delete('/api/task', { data: taskData });
+export function updateTaskOrganizationApi(
+  taskId: number,
+  data: {
+    folder?: string;
+    tags?: string[];
+    isFavorite?: boolean;
+  },
+): Promise<{
+  id: number;
+  folder: string | null;
+  tags: string[];
+  isFavorite: boolean;
+}> {
+  return request.put(`/api/task/${taskId}/organization`, data);
 }
 
-// =======================
-// 获取执行结果
-// =======================
+export interface TaskCookieCredentialSummary {
+  id: number;
+  name: string;
+  cookieDomain: string;
+  cookieCount: number;
+  hasNotes: boolean;
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  status: "active" | "expiring_soon" | "expired";
+  isExpired: boolean;
+  isExpiringSoon: boolean;
+  isUsable: boolean;
+  statusMessage: string;
+}
+
+export interface TaskCookieCredentialDetail extends TaskCookieCredentialSummary {
+  notes: string;
+}
+
+export function getTaskCookieCredentialsApi(): Promise<TaskCookieCredentialSummary[]> {
+  return request.get("/api/task/cookie-credentials");
+}
+
+export function getTaskCookieCredentialDetailApi(
+  credentialId: number,
+): Promise<TaskCookieCredentialDetail> {
+  return request.get(`/api/task/cookie-credentials/${credentialId}`);
+}
+
+export function createTaskCookieCredentialApi(data: {
+  name: string;
+  cookieString: string;
+  cookieDomain?: string;
+  notes?: string;
+  expiresAt?: string;
+}): Promise<TaskCookieCredentialSummary> {
+  return request.post("/api/task/cookie-credentials", data);
+}
+
+export function updateTaskCookieCredentialApi(
+  credentialId: number,
+  data: {
+    name?: string;
+    cookieString?: string;
+    cookieDomain?: string;
+    notes?: string;
+    expiresAt?: string;
+  },
+): Promise<TaskCookieCredentialSummary> {
+  return request.put(`/api/task/cookie-credentials/${credentialId}`, data);
+}
+
+export function deleteTaskCookieCredentialApi(
+  credentialId: number,
+): Promise<{ id: number; name: string }> {
+  return request.delete(`/api/task/cookie-credentials/${credentialId}`);
+}
+
+export interface TaskTemplateSummary {
+  id: number;
+  name: string;
+  description: string;
+  category: string;
+  sourceTaskId: number | null;
+  sourceTaskName: string;
+  url: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TaskTemplateDetail extends TaskTemplateSummary {
+  config: Record<string, unknown>;
+  script: string;
+}
+
+export function getTaskTemplatesApi(params?: {
+  search?: string;
+  category?: string;
+}): Promise<TaskTemplateSummary[]> {
+  return request.get("/api/task/templates", { params });
+}
+
+export function getTaskTemplateCategoriesApi(): Promise<string[]> {
+  return request.get("/api/task/template-categories");
+}
+
+export function getTaskTemplateDetailApi(
+  templateId: number,
+): Promise<TaskTemplateDetail> {
+  return request.get(`/api/task/templates/${templateId}`);
+}
+
+export function createTaskTemplateApi(data: {
+  name: string;
+  description?: string;
+  category?: string;
+  url: string;
+  taskName?: string;
+  config: Record<string, unknown>;
+  script?: string;
+}): Promise<TaskTemplateSummary> {
+  return request.post("/api/task/templates", data);
+}
+
+export function createTaskTemplateFromTaskApi(data: {
+  taskId: number;
+  name?: string;
+  description?: string;
+  category?: string;
+}): Promise<TaskTemplateSummary> {
+  return request.post("/api/task/templates/from-task", data);
+}
+
+export function updateTaskTemplateApi(
+  templateId: number,
+  data: {
+    name?: string;
+    description?: string;
+    category?: string;
+    url?: string;
+    taskName?: string;
+    config?: Record<string, unknown>;
+    script?: string;
+  },
+): Promise<TaskTemplateSummary> {
+  return request.put(`/api/task/templates/${templateId}`, data);
+}
+
+export function deleteTaskTemplateApi(
+  templateId: number,
+): Promise<{ id: number; name: string }> {
+  return request.delete(`/api/task/templates/${templateId}`);
+}
+
+export function deleteTaskApi(taskData: {
+  name: string;
+  url: string;
+}): Promise<{ message: string }> {
+  return request.delete("/api/task", { data: taskData });
+}
+
 export function getExecutionResultApi(executionId: number): Promise<{
   executionId: number;
   taskId: number;
   taskName: string;
   status: string;
   resultCount: number;
-  results: any[];
+  results: unknown[];
   createdAt: string;
 }> {
   return request.get(`/api/task/execution-result/${executionId}`);
 }
 
-// =======================
-// 获取统计数据
-// =======================
 export interface StatisticsData {
   totalTasks: number;
   successTasks: number;
@@ -376,12 +604,9 @@ export interface StatisticsData {
 }
 
 export function getStatisticsApi(): Promise<StatisticsData> {
-  return request.get('/api/task/statistics');
+  return request.get("/api/task/statistics");
 }
 
-// =======================
-// 打包执行结果
-// =======================
 export interface PackageResultReq {
   packageConfig: {
     structure?: {
@@ -416,6 +641,11 @@ export interface PackageResultRes {
   packagePath: string;
 }
 
-export function packageResultApi(executionId: number, packageConfig: PackageResultReq['packageConfig']): Promise<PackageResultRes> {
-  return request.post(`/api/task/package-result/${executionId}`, { packageConfig });
+export function packageResultApi(
+  executionId: number,
+  packageConfig: PackageResultReq["packageConfig"],
+): Promise<PackageResultRes> {
+  return request.post(`/api/task/package-result/${executionId}`, {
+    packageConfig,
+  });
 }

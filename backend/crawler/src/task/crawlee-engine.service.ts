@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 import {
   PlaywrightCrawler,
   Dataset,
@@ -6,11 +6,14 @@ import {
   RequestQueue,
   Configuration,
 } from 'crawlee';
+import { OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Task } from './entities/task.entity';
 import { Execution } from '../execution/entities/execution.entity';
 import {
+  BehaviorExtractType,
+  BehaviorStep,
   CrawleeTaskConfig,
   NestedExtractContext,
   PreActionConfig,
@@ -20,6 +23,7 @@ import {
 import { TaskGateway } from './task.gateway';
 import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
+import * as path from 'path';
 import { FilePackageService } from './file-package.service';
 import TurndownService from 'turndown';
 import * as playwright from 'playwright';
@@ -31,6 +35,12 @@ import { formatHtmlFragment } from './content-extraction.utils';
 import { SystemSettingsService } from '../admin/system-settings.service';
 import { SettingKey } from '../admin/entities/system-setting.entity';
 import { MailService, MailTransportConfig } from '../mail/mail.service';
+import { NotificationService } from '../notification/notification.service';
+import { isUnsafeCustomJsEnabled } from '../config/runtime-security';
+
+const DEFAULT_RUNTIME_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const DEFAULT_RUNTIME_VIEWPORT = { width: 1366, height: 768 };
 
 interface CrawlerTask {
   taskId: number;
@@ -44,10 +54,20 @@ interface ActiveCrawlerTask {
   crawler?: PlaywrightCrawler;
   stopRequested: boolean;
   stopReason?: string;
+  terminalStatus?: 'success' | 'failed';
+  terminalReason?: string;
+}
+
+interface BehaviorExecutionContext {
+  page: any;
+  scope?: any;
+  currentItem?: Record<string, any>;
+  results: Record<string, any>[];
+  config: CrawleeTaskConfig;
 }
 
 @Injectable()
-export class CrawleeEngineService {
+export class CrawleeEngineService implements OnModuleInit {
   private readonly logger = new Logger(CrawleeEngineService.name);
   private taskQueue: CrawlerTask[] = [];
   private isProcessing = false;
@@ -55,7 +75,7 @@ export class CrawleeEngineService {
   private detachedDetailBrowser: playwright.Browser | null = null;
   private readonly activeTasks = new Map<number, ActiveCrawlerTask>();
 
-  // 鍏ㄥ眬 Turndown 瀹炰緥锛岀敤浜庡皢 HTML 杞负 Markdown
+  // Shared Turndown instance for converting HTML fragments to Markdown.
   private static turndownService = new TurndownService({
     headingStyle: 'atx',
     codeBlockStyle: 'fenced',
@@ -70,10 +90,10 @@ export class CrawleeEngineService {
       const markdown = CrawleeEngineService.turndownService.turndown(html);
       return markdown.trim();
     } catch (error) {
-      // 杞崲澶辫触鏃讹紝閫€鍥炲埌鍘熷鏂囨湰
-      // 闈欐€佹柟娉曚腑鏃犳硶浣跨敤瀹炰緥 logger锛屼繚鐣?console.error
+      // Fall back to the original HTML when conversion fails.
+      // Static methods cannot use the instance logger, so keep console.error here.
       if (typeof console !== 'undefined') {
-        console.error('Markdown 杞崲澶辫触:', error);
+        console.error('Markdown conversion failed:', error);
       }
       return html;
     }
@@ -88,14 +108,19 @@ export class CrawleeEngineService {
     private readonly filePackageService: FilePackageService,
     private readonly systemSettingsService: SystemSettingsService,
     private readonly mailService: MailService,
+    private readonly notificationService: NotificationService,
   ) {
     // Extra safeguard: avoid Windows process listing parser crash in Crawlee systemInfoV2.
     Configuration.getGlobalConfig().set('systemInfoV2', false);
     this.initializeCrawler();
   }
 
+  async onModuleInit() {
+    await this.recoverInterruptedExecutions();
+  }
+
   /**
-   * 鍒濆鍖栫埇铏紩鎿?
+   * 鍒濆鍖栭粯璁?Crawlee 寮曟搸
    */
   private initializeCrawler() {
     this.crawler = new PlaywrightCrawler({
@@ -107,7 +132,7 @@ export class CrawleeEngineService {
         },
       },
       async requestHandler({ request, page, response }) {
-        // 璇锋眰澶勭悊閫昏緫浼氬湪addTaskToQueue涓姩鎬佽缃?
+        // The real request handling logic is configured per task in addTaskToQueue.
         this.logger.debug(`Processing ${request.url}`);
       },
     });
@@ -115,19 +140,114 @@ export class CrawleeEngineService {
     this.logger.log('Crawlee engine initialized');
   }
 
+  private async recoverInterruptedExecutions() {
+    try {
+      const staleExecutions = await this.executionRepository.find({
+        where: [{ status: 'running' }, { status: 'stopping' }],
+        relations: ['task'],
+      });
+
+      if (staleExecutions.length === 0) {
+        return;
+      }
+
+      const recoveredAt = new Date();
+      const recoveryMessage =
+        'Server interrupted unexpectedly. This execution was marked as failed during startup recovery.';
+      const tasksToSave = new Map<number, Task>();
+
+      for (const execution of staleExecutions) {
+        execution.status = 'failed';
+        execution.log = recoveryMessage;
+        execution.endTime = recoveredAt;
+
+        const task = execution.task;
+        if (
+          task &&
+          (task.status === 'pending' ||
+            task.status === 'running' ||
+            task.status === 'stopping')
+        ) {
+          task.status = 'failed';
+          task.endTime = recoveredAt;
+          tasksToSave.set(task.id, task);
+        }
+      }
+
+      await this.executionRepository.save(staleExecutions);
+
+      if (tasksToSave.size > 0) {
+        const recoveredTasks = Array.from(tasksToSave.values());
+        await this.taskRepository.save(recoveredTasks);
+
+        for (const task of recoveredTasks) {
+          this.taskGateway.broadcastTaskUpdate(
+            {
+              taskId: task.id,
+              taskName: task.name,
+              taskUrl: task.url,
+              status: 'failed',
+              progress: 0,
+              screenshotPath: task.screenshotPath,
+            },
+            task.userId,
+          );
+        }
+      }
+
+      this.logger.warn(
+        `Recovered ${staleExecutions.length} interrupted execution(s) as failed during startup`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to recover interrupted executions on startup: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
   /**
-   * 娣诲姞浠诲姟鍒伴槦鍒?
-   */
+   * 灏嗕换鍔″姞鍏ラ槦鍒?   */
   async addTaskToQueue(task: CrawlerTask) {
     this.taskQueue.push(task);
     this.logger.log(
-      `浠诲姟 ${task.taskId} 宸叉坊鍔犲埌闃熷垪锛屽綋鍓嶉槦鍒楅暱搴? ${this.taskQueue.length}`,
+      `Task ${task.taskId} queued. Current queue length: ${this.taskQueue.length}`,
     );
 
-    // 濡傛灉娌℃湁鍦ㄥ鐞嗭紝寮€濮嬪鐞嗛槦鍒?
+    // 如果当前没有正在处理的任务，立即启动队列处理。
     if (!this.isProcessing) {
       this.processQueue();
     }
+  }
+
+  private getStoredTaskScreenshotOptions(): playwright.PageScreenshotOptions {
+    return {
+      fullPage: true,
+      type: 'jpeg',
+      quality: 68,
+      scale: 'css',
+      animations: 'disabled',
+      caret: 'hide',
+    };
+  }
+
+  private getUploadsRootDir(): string {
+    return path.resolve(__dirname, '..', '..', 'uploads');
+  }
+
+  private getScreenshotStoragePaths(taskId: number, executionId: number) {
+    const screenshotFilename = `task_${taskId}_exec_${executionId}_screenshot.jpg`;
+    return {
+      filename: screenshotFilename,
+      absoluteDir: path.join(this.getUploadsRootDir(), 'screenshots'),
+      absoluteFilePath: path.join(
+        this.getUploadsRootDir(),
+        'screenshots',
+        screenshotFilename,
+      ),
+      relativePath: `screenshots/${screenshotFilename}`,
+    };
   }
 
   /**
@@ -148,19 +268,23 @@ export class CrawleeEngineService {
       try {
         await this.executeCrawlerTask(crawlerTask);
       } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error || '鏈煡閿欒');
-        const errorObj = error instanceof Error ? error : new Error(String(error || '鏈煡閿欒'));
-        this.logger.error(`浠诲姟 ${crawlerTask.taskId} 鎵ц澶辫触:`, errorObj);
+        const errorMessage =
+          error instanceof Error ? error.message : String(error || 'Unknown error');
+        const errorObj =
+          error instanceof Error
+            ? error
+            : new Error(String(error || 'Unknown error'));
+        this.logger.error(`Task ${crawlerTask.taskId} failed while processing queue:`, errorObj);
         await this.updateExecutionStatus(
           crawlerTask.executionId,
           'failed',
-          `鎵ц澶辫触: ${errorMessage}`,
+          `Task failed: ${errorMessage}`,
         );
       }
     }
 
     this.isProcessing = false;
-    this.logger.log('鐖櫕浠诲姟闃熷垪澶勭悊瀹屾垚');
+    this.logger.log('Crawler task queue processing completed');
   }
 
   /**
@@ -168,6 +292,7 @@ export class CrawleeEngineService {
    */
   private async executeCrawlerTask(crawlerTask: CrawlerTask) {
     const { taskId, executionId, config } = crawlerTask;
+    this.assertUniqueSelectorNames(config);
     const activeTask: ActiveCrawlerTask = {
       taskId,
       executionId,
@@ -175,24 +300,28 @@ export class CrawleeEngineService {
     };
     this.activeTasks.set(taskId, activeTask);
     const stopWatcher = this.startTaskStopWatcher(activeTask);
-    this.logger.log(`寮€濮嬫墽琛屼换鍔?${taskId}, 鎵цID: ${executionId}`);
+    await this.taskRepository.update(taskId, {
+      status: 'running',
+      endTime: null as unknown as Date,
+    });
+    this.logger.log(`Starting task ${taskId}, execution ${executionId}`);
 
-    // 澹版槑鍙橀噺鐢ㄤ簬缁熻淇℃伅
+    // Track aggregated extraction stats for the final summary.
     let totalExtractedItems = 0;
     let totalValidItems = 0;
-    let screenshotRelativePath: string | null = null; // 鍦╡xecuteCrawlerTask鑼冨洿鍐呭０鏄?
-    let screenshotFilePath: string | null = null; // 鍦╡xecuteCrawlerTask鑼冨洿鍐呭０鏄?
+    let screenshotRelativePath: string | null = null; // Saved within executeCrawlerTask scope.
+    let screenshotFilePath: string | null = null; // Saved within executeCrawlerTask scope.
     const baseRequestUrl = config.urls?.[0] ?? '';
 
-    // 鏇存柊鎵ц鐘舵€佷负杩愯涓?
+    // Mark execution as running before the crawl starts.
     await this.updateExecutionStatus(
       executionId,
       'running',
-      '姝ｅ湪鎵ц鐖櫕浠诲姟...',
+      'Crawler task is running...',
     );
 
     try {
-      // 鍒濆鍖栧瓨鍌?
+      // Initialize storage.
       const dataset = config.datasetId
         ? await Dataset.open(config.datasetId)
         : await Dataset.open(`task-${taskId}-${Date.now()}`);
@@ -201,12 +330,12 @@ export class CrawleeEngineService {
         ? await KeyValueStore.open(config.keyValueStoreId)
         : await KeyValueStore.open(`task-${taskId}-${Date.now()}`);
 
-      // 鍒涘缓璇锋眰闃熷垪
+      // Create request queue.
       const requestQueue = await RequestQueue.open(
         `task-${taskId}-${Date.now()}`,
       );
 
-      // 娣诲姞URL鍒伴槦鍒?
+      // Seed initial URLs.
       for (const [index, url] of config.urls.entries()) {
         await requestQueue.addRequest({
           url,
@@ -214,12 +343,13 @@ export class CrawleeEngineService {
         });
       }
 
-      // 鑾峰彇浠诲姟淇℃伅鐢ㄤ簬骞挎挱
+      // Load task info for websocket broadcasts.
       const taskInfo = await this.taskRepository.findOne({
         where: { id: taskId },
+        select: ['id', 'name', 'url', 'userId'],
       });
 
-      // 淇濆瓨鏂规硶鐨勫紩鐢ㄤ互鍦ㄧ澶村嚱鏁颁腑浣跨敤
+      // Capture helpers for use inside the request handler closure.
       const updateExecutionStatus = this.updateExecutionStatus.bind(this);
       const updateTaskStatus = this.taskRepository.update.bind(this.taskRepository);
       const broadcastTaskUpdate = this.taskGateway.broadcastTaskUpdate.bind(
@@ -239,12 +369,25 @@ export class CrawleeEngineService {
         this.extractDataFromElementWithRetries.bind(this);
       const extractNestedContextsForItems =
         this.extractNestedContextsForItems.bind(this);
+      const extractConfiguredListItems =
+        this.extractConfiguredListItems.bind(this);
       const mapWithConcurrencyLimit = this.mapWithConcurrencyLimit.bind(this);
       const getDetailItemConcurrency =
         this.getDetailItemConcurrency.bind(this);
+      const executeBehaviorSteps = this.executeBehaviorSteps.bind(this);
       const ensureTaskNotStopped = this.ensureTaskNotStopped.bind(this);
+      const isTaskStopRequested = this.isTaskStopRequested.bind(this);
+      const isTaskTerminal = this.isTaskTerminal.bind(this);
+      const waitForPageSettled = this.waitForPageSettled.bind(this);
+      const waitForReadySelector = this.waitForReadySelector.bind(this);
+      const getEffectiveViewport = this.getEffectiveViewport.bind(this);
+      const getEffectiveUserAgent = this.getEffectiveUserAgent.bind(this);
+      const getStoredTaskScreenshotOptions =
+        this.getStoredTaskScreenshotOptions.bind(this);
+      const getScreenshotStoragePaths =
+        this.getScreenshotStoragePaths.bind(this);
 
-      // 鍒涘缓涓撶敤鐨刢rawler瀹炰緥
+      // Create a dedicated crawler instance for this task.
       const taskCrawler = new PlaywrightCrawler({
         requestQueue,
         maxRequestsPerCrawl: config.maxRequestsPerCrawl || 1,
@@ -262,6 +405,13 @@ export class CrawleeEngineService {
         preNavigationHooks: [
           async ({ page, request }) => {
             ensureTaskNotStopped(taskId);
+            const viewport = getEffectiveViewport(config);
+            await page.setViewportSize(viewport).catch(() => undefined);
+            await page
+              .setExtraHTTPHeaders({
+                'User-Agent': getEffectiveUserAgent(config),
+              })
+              .catch(() => undefined);
             await this.applyConfiguredCookies(page, request.url, config);
             await this.waitBeforeNavigation(page, config);
           },
@@ -281,9 +431,13 @@ export class CrawleeEngineService {
                 : 1;
           const totalRequests = Math.max(1, config.urls.length);
 
-          // 杩涘害鏇存柊鍑芥暟 - 鎻愪緵鏇寸粏绮掑害鐨勮繘搴﹀弽棣?
+          // Update progress with per-request detail and overall aggregation.
           const updateDetailedProgress = async (currentProgress: number, message: string) => {
-            // 璁＄畻鍏ㄥ眬杩涘害锛氬凡瀹屾垚鐨勮姹?+ 褰撳墠璇锋眰鐨勮繘搴?
+            if (isTaskStopRequested(taskId) || isTaskTerminal(taskId)) {
+              return;
+            }
+
+            // Combine completed request progress with the current request progress.
             const baseProgress = ((requestIndex - 1) / totalRequests) * 100;
             const totalProgress = Math.max(
               0,
@@ -301,67 +455,82 @@ export class CrawleeEngineService {
               taskUrl: taskInfo?.url,
               status: 'running',
               progress: totalProgress,
-            });
+            }, taskInfo?.userId);
           };
 
-          // 寮€濮嬪鐞嗚姹?
-          await updateDetailedProgress(5, `寮€濮嬪鐞嗚姹?${requestIndex}/${totalRequests}: ${request.url}`);
+          // Start processing the current request.
+          await updateDetailedProgress(
+            5,
+            `Starting request ${requestIndex}/${totalRequests}: ${request.url}`,
+          );
 
-          // 澹版槑灞€閮ㄥ彉閲?
+          // Request-scoped extraction buffers.
           let extractedItems: any[] = [];
           let validItems: any[] = [];
 
           try {
             ensureTaskNotStopped(taskId);
-            // 璁剧疆瑙嗗彛
-            if (config.viewport) {
-              await page.setViewportSize(config.viewport);
-              await updateDetailedProgress(10, `璁剧疆瑙嗗彛: ${config.viewport.width}x${config.viewport.height}`);
-            } else {
-              await updateDetailedProgress(10, `璺宠繃瑙嗗彛璁剧疆`);
-            }
+            const viewport = getEffectiveViewport(config);
+            await updateDetailedProgress(
+              10,
+              `Viewport ready: ${viewport.width}x${viewport.height}`,
+            );
 
-            // 璁剧疆鐢ㄦ埛浠ｇ悊
-            if (config.userAgent) {
-              await page.setExtraHTTPHeaders({
-                'User-Agent': config.userAgent,
-              });
-              await updateDetailedProgress(15, `璁剧疆鐢ㄦ埛浠ｇ悊`);
-            } else {
-              await updateDetailedProgress(15, `璺宠繃鐢ㄦ埛浠ｇ悊璁剧疆`);
-            }
+            await updateDetailedProgress(
+              15,
+              `User-Agent ready: ${getEffectiveUserAgent(config)}`,
+            );
 
-            // 鏍瑰眰鍓嶇疆鍔ㄤ綔锛氱偣鍑绘寜閽€佺瓑寰呭厓绱犵瓑
+            // Execute task-level pre-actions such as clicks and waits.
             if (config.preActions?.length) {
               await executePreActions(
                 page,
                 config.preActions,
                 config.waitForTimeout || 30000,
               );
-              await updateDetailedProgress(20, `鎵ц鍓嶇疆椤甸潰鍔ㄤ綔瀹屾垚`);
+              await updateDetailedProgress(20, 'Completed page pre-actions');
             } else {
-              await updateDetailedProgress(20, `璺宠繃鍓嶇疆椤甸潰鍔ㄤ綔`);
+              await updateDetailedProgress(20, 'Skipped page pre-actions');
             }
 
-            // 绛夊緟閫夋嫨鍣?
-            if (config.waitForSelector) {
-              await page.waitForSelector(config.waitForSelector, {
-                timeout: config.waitForTimeout || 30000,
-              });
-              await updateDetailedProgress(25, `绛夊緟鍏冪礌鍔犺浇: ${config.waitForSelector}`);
+            const contentReadySelector = String(
+              config.waitForSelector ||
+                (config.baseSelector && config.selectors ? config.baseSelector : '') ||
+                '',
+            ).trim();
+
+            // Wait for a stable anchor element when configured.
+            if (contentReadySelector) {
+              const selectorReady = await waitForReadySelector(
+                page,
+                contentReadySelector,
+                config.waitForTimeout || config.navigationTimeout || 30000,
+                config.waitForSelector ? 'visible' : 'attached',
+              );
+              if (config.waitForSelector && !selectorReady) {
+                throw new Error(
+                  `Configured waitForSelector did not appear: ${contentReadySelector}`,
+                );
+              }
+              await updateDetailedProgress(
+                25,
+                `Content selector ready: ${contentReadySelector}`,
+              );
             } else {
-              await updateDetailedProgress(25, `璺宠繃鍏冪礌绛夊緟`);
+              await updateDetailedProgress(25, 'No content-ready selector configured');
             }
 
-            // 婊氬姩椤甸潰锛堝鐞嗘噿鍔犺浇锛?
-            if (config.scrollEnabled) {
+            // Scroll the page to trigger lazy-loaded content when needed.
+            const shouldDeferListScroll = Boolean(
+              config.baseSelector && config.selectors,
+            );
+            if (config.scrollEnabled && !shouldDeferListScroll) {
               await page.evaluate(
                 async ({ scrollDistance, scrollDelay, maxScrollDistance }) => {
                   let scrolled = 0;
                   while (scrolled < maxScrollDistance) {
                     window.scrollBy(0, scrollDistance);
                     scrolled += scrollDistance;
-                    // 绛夊緟涓€娈垫椂闂达紝璁╁唴瀹瑰姞杞?
                     await new Promise((resolve) =>
                       setTimeout(resolve, scrollDelay),
                     );
@@ -373,42 +542,29 @@ export class CrawleeEngineService {
                   maxScrollDistance: config.maxScrollDistance || 10000,
                 },
               );
-              // 婊氬姩瀹屾垚鍚庯紝鍐嶇瓑寰呬竴涓嬭鍐呭瀹屽叏鍔犺浇
               await page.waitForTimeout(1000);
-              await updateDetailedProgress(45, `瀹屾垚椤甸潰婊氬姩鍔犺浇`);
+              await updateDetailedProgress(45, 'Completed page scrolling');
             } else {
-              await updateDetailedProgress(45, `璺宠繃椤甸潰婊氬姩`);
+              await updateDetailedProgress(45, 'Skipped page scrolling');
             }
 
-            // 绛夊緟椤甸潰鍔犺浇瀹屾垚 - 浣跨敤鏇村鏉剧殑绛栫暐
-            try {
-              // 鍏堢瓑寰匘OM鍐呭鍔犺浇瀹屾垚锛堟洿蹇級
-              await page.waitForLoadState('domcontentloaded', {
-                timeout: config.navigationTimeout || 30000,
-              });
+            await waitForPageSettled(
+              page,
+              config.waitForTimeout || config.navigationTimeout || 30000,
+              1200,
+            );
 
-              // 鐒跺悗灏濊瘯绛夊緟缃戠粶绌洪棽锛屼絾濡傛灉瓒呮椂鍒欑户缁紙瀵逛簬鍔ㄦ€佺綉绔欐洿鍙嬪ソ锛?
-              await page
-                .waitForLoadState('networkidle', {
-                  timeout: 10000, // 鍙瓑寰?0绉掔殑缃戠粶绌洪棽
-                })
-                .catch(() => {
-                  logger.log(
-                    `椤甸潰 ${request.url} 缃戠粶璇锋眰鏈畬鍏ㄧ┖闂诧紝缁х画澶勭悊`,
-                  );
-                });
-            } catch (error) {
-              const errorMessage = error instanceof Error ? error.message : String(error || '鏈煡閿欒');
-              logger.log(
-                `椤甸潰 ${request.url} 鍔犺浇瓒呮椂锛屼絾缁х画澶勭悊: ${errorMessage}`,
+            if (contentReadySelector) {
+              await waitForReadySelector(
+                page,
+                contentReadySelector,
+                config.waitForTimeout || config.navigationTimeout || 30000,
+                config.waitForSelector ? 'visible' : 'attached',
               );
             }
 
-            // 绛夊緟椤甸潰瀹屽叏鍔犺浇
-            await page.waitForTimeout(2000);
-            await updateDetailedProgress(55, `绛夊緟椤甸潰鍐呭鍔犺浇瀹屾垚`);
+            await updateDetailedProgress(55, 'Page settled; extraction will start');
 
-            // 鍩虹淇℃伅
             const pageData = {
               url: request.url,
               title: await page.title(),
@@ -416,148 +572,26 @@ export class CrawleeEngineService {
               crawledAt: new Date().toISOString(),
             };
 
-            // 寮€濮嬫暟鎹彁鍙?
-            await updateDetailedProgress(65, 'Starting data extraction');
+            await updateDetailedProgress(65, '开始提取数据');
 
-      if (config.baseSelector && config.selectors) {
-              // 浣跨敤鍩虹閫夋嫨鍣ㄦ壘鍒版墍鏈夐」鐩?
-              // 澶勭悊XPath閫夋嫨鍣細Playwright闇€瑕佷娇鐢?xpath= 鍓嶇紑
-              let baseElements;
-              if (config.baseSelector.startsWith('//') || config.baseSelector.startsWith('.//')) {
-                // XPath閫夋嫨鍣?
-                const xpathSelector = config.baseSelector.startsWith('.//') 
-                  ? config.baseSelector.substring(1) // 绉婚櫎.鍓嶇紑
-                  : config.baseSelector;
-                baseElements = page.locator(`xpath=${xpathSelector}`);
-                logger.log(`浣跨敤XPath鍩虹閫夋嫨鍣? ${xpathSelector}`);
-              } else {
-                // CSS閫夋嫨鍣?
-                baseElements = page.locator(config.baseSelector);
-                logger.log(`浣跨敤CSS鍩虹閫夋嫨鍣? ${config.baseSelector}`);
-              }
-              
-          const itemCount = await baseElements.count();
-        logger.log(`鍩虹椤规€绘暟: ${itemCount}, 鎻愬彇涓婇檺: ${config.maxItems ?? itemCount}`);
-
-        logger.log(`鎵惧埌 ${itemCount} 涓熀纭€鍏冪礌`);
-
-              // 闄愬埗鎻愬彇鏁伴噺
-        const maxExtract = config.maxItems ? Math.min(itemCount, config.maxItems) : itemCount;
-              logger.log(`鍩虹椤规彁鍙栦笂闄愶細${maxExtract}`);
-
-        // 淇濆瓨褰撳墠鍒楄〃椤甸潰鐨刄RL锛岀敤浜庡悗缁繑鍥?
-        const listPageUrl = page.url();
-        logger.log(`鍒楄〃椤甸潰URL: ${listPageUrl}`);
-
-        // 绗竴姝ワ細鍏堟彁鍙栨墍鏈夊垪琛ㄩ」鐨勫熀鏈俊鎭紙涓嶅寘鍚玴arentLink鐨勫瓧娈碉級
-        const listItemsData: any[] = [];
-        for (let i = 0; i < maxExtract; i++) {
-                const itemData: any = {};
-                const baseElement = baseElements.nth(i);
-        logger.log(`姝ｅ湪鎻愬彇绗?${i + 1} 鏉℃暟鎹殑鍩烘湰淇℃伅 (鍩虹椤?${itemCount} 鐨勭 ${i + 1} 涓?` );
-
-                // 璋冭瘯锛氭鏌aseElement鏄惁瀛樺湪
-                const elementCount = await baseElement.count();
-                const elementExists = elementCount > 0;
-                logger.log(`澶勭悊绗?${i + 1} 涓厓绱狅紝鍏冪礌瀛樺湪: ${elementExists}, count: ${elementCount}`);
-                
-                if (!elementExists) {
-                  logger.warn(`绗?${i + 1} 涓熀纭€鍏冪礌涓嶅瓨鍦紝璺宠繃`);
-                  continue; // 璺宠繃涓嶅瓨鍦ㄧ殑鍏冪礌
-                }
-
-                // 鍙彁鍙栨墍鏈夐潪瀛愯妭鐐圭殑閫夋嫨鍣紙鍖呮嫭link绫诲瀷鐨勮妭鐐癸級
-                const linkSelectors = config.selectors.filter(s => !s.parentLink);
-                for (const selectorConfig of linkSelectors) {
-                  await extractDataFromElementWithRetries(
-                    baseElement,
-                    selectorConfig,
-                    itemData,
-                    page,
-                    config,
-                  );
-                }
-
-                logger.log(`绗?${i + 1} 涓厓绱犲熀鏈俊鎭?`, itemData);
-                listItemsData.push(itemData);
-              }
-
-        logger.log(`Extracted base info for ${listItemsData.length} list items`);
-
-        // 绗簩姝ワ細瀵规瘡涓垪琛ㄩ」锛屽鏋滈渶瑕佹彁鍙杙arentLink瀛楁锛屽垯瀵艰埅鍒板瓙閾炬帴鎻愬彇
-        const childSelectors = config.selectors.filter(s => s.parentLink);
-        if (childSelectors.length > 0) {
-          const detailItemConcurrency = getDetailItemConcurrency(
-            config,
-            listItemsData.length,
-            totalRequests,
-          );
-          logger.log(
-            `Starting detail-page extraction for ${childSelectors.length} parentLink fields with in-page concurrency ${detailItemConcurrency}`,
-          );
-          const childSelectorsByLinkField = new Map<string, SelectorConfig[]>();
-          for (const selectorConfig of childSelectors) {
-            if (!selectorConfig.parentLink) continue;
-            const grouped = childSelectorsByLinkField.get(selectorConfig.parentLink) || [];
-            grouped.push(selectorConfig);
-            childSelectorsByLinkField.set(selectorConfig.parentLink, grouped);
-          }
-          
-          await mapWithConcurrencyLimit(
-            listItemsData,
-            detailItemConcurrency,
-            async (itemData, i) => {
-              logger.log(`Processing detail content for list item ${i + 1}/${listItemsData.length}`);
-              
-              for (const [linkFieldName, selectorGroup] of childSelectorsByLinkField.entries()) {
-                const linkUrl = itemData[linkFieldName];
-                if (linkUrl && typeof linkUrl === 'string') {
-                  try {
-                    await extractParentFieldsFromDetailPage(
-                      linkUrl,
-                      selectorGroup,
-                      itemData,
-                      config,
-                    );
-                    for (const selectorConfig of selectorGroup) {
-                      logger.log(`Extracted field ${selectorConfig.name}: ${itemData[selectorConfig.name]}`);
-                    }
-                  } catch (error) {
-                    logger.error(`Failed to extract detail fields for parentLink=${linkFieldName}:`, error);
-                    for (const selectorConfig of selectorGroup) {
-                      itemData[selectorConfig.name] = null;
-                    }
-                  }
-                } else {
-                  for (const selectorConfig of selectorGroup) {
-                    itemData[selectorConfig.name] = null;
-                  }
-                  logger.warn(`Missing parent link value for parentLink=${linkFieldName}`);
-                }
-              }
-              
-              logger.log(`Completed list item ${i + 1}`, itemData);
-            },
-          );
-        }
-
-        // 灏嗘墍鏈夊垪琛ㄩ」鏁版嵁娣诲姞鍒癳xtractedItems
-        extractedItems = listItemsData;
-
-        // 绗笁姝ワ細鎸?nestedContexts 閫掑綊鎻愬彇澶氱骇椤甸潰鏁版嵁
-        if (config.nestedContexts?.length) {
-          await extractNestedContextsForItems(
-            extractedItems,
-            config.nestedContexts,
-            config,
-            1,
-          );
-        }
-
-              logger.log(`Successfully extracted ${extractedItems.length} records`);
+            if (config.taskMode === 'behavior' && config.behaviorSteps?.length) {
+              extractedItems = await executeBehaviorSteps(page, config);
+              logger.log(
+                `Behavior mode extracted ${extractedItems.length} records`,
+              );
+            } else if (config.baseSelector && config.selectors) {
+              extractedItems = await extractConfiguredListItems(
+                page,
+                config,
+                totalRequests,
+              );
+              logger.log(
+                `Configured list mode extracted ${extractedItems.length} records`,
+              );
             } else if (config.selectors) {
-              // 鍚戝悗鍏煎锛氬鏋滄病鏈夊熀纭€閫夋嫨鍣紝浣跨敤鍘熸湁閫昏緫
-              const extractedData: any = {};
+              const extractedData: any = {
+                _page: pageData,
+              };
               for (const selectorConfig of config.selectors) {
                 await extractDataFromSelector(
                   page,
@@ -567,9 +601,7 @@ export class CrawleeEngineService {
               }
               extractedItems = [extractedData];
             }
-
-
-            // 妫€鏌ユ暟鎹€婚噺闄愬埗
+            // Enforce maxItems across the whole dataset.
             let currentCount = await dataset
               .getInfo()
               .then((info) => info?.itemCount || 0);
@@ -578,25 +610,24 @@ export class CrawleeEngineService {
               logger.log(
                 `Reached max item limit ${config.maxItems}, skipping data persistence for this page`, 
               );
-              return; // 璺宠繃鏁版嵁淇濆瓨锛屼絾涓嶄腑鏂暣涓换鍔?
+              return; // Skip persistence for this page, but do not abort the whole task.
             }
 
-            // 杩囨护鍜岄獙璇佹暟鎹」
+            // Filter invalid or empty records.
             validItems = extractedItems.filter(itemData => {
-              // 妫€鏌ユ槸鍚︽墍鏈夊瓧娈甸兘涓虹┖鎴杗ull
-              const hasValidField = Object.values(itemData).some(value =>
-                value !== null && value !== undefined && value !== '' && value !== 'null'
+              // Drop records where all fields are empty or null.
+              const hasValidField = Object.values(itemData).some((value) =>
+                hasMeaningfulValue(value),
               );
 
               if (!hasValidField) {
-                logger.log(`杩囨护鎺夌┖鏁版嵁椤?`, itemData);
+                logger.log('过滤掉空数据项', itemData);
                 return false;
               }
 
               return true;
             });
 
-            // 妫€鏌ユ槸鍚︽湁浠讳綍鏈夋晥鏁版嵁
             if (validItems.length === 0) {
               const errorMessage = 'Task failed: no valid data extracted; all extracted fields were empty';
               logger.error(errorMessage);
@@ -620,69 +651,71 @@ export class CrawleeEngineService {
               );
             }
 
-            // 鑾峰彇鎵€鏈塱mage绫诲瀷鐨勫瓧娈靛悕锛岀敤浜庡悗缁鐞?
+            // Track image-type fields so we can normalize them to URLs only.
             const imageFields = (config.selectors || [])
               .filter(selector => selector.type === 'image')
               .map(selector => selector.name);
 
-            // 淇濆瓨杩囨护鍚庣殑鏁版嵁椤?
+            // Persist filtered data.
             for (const itemData of validItems) {
               if (config.maxItems && currentCount >= config.maxItems) {
-                break; // 杈惧埌闄愬埗锛屽仠姝繚瀛?
+                break; // Stop saving once maxItems is reached.
               }
 
-              // 鍦↗SON妯″紡涓嬶紝纭繚image瀛楁淇濆瓨鐨勬槸鍥剧墖瀵瑰簲鐨刄RL
-              // 閬嶅巻鎵€鏈塱mage绫诲瀷瀛楁锛岀‘淇濆€兼槸鏈夋晥鐨刄RL瀛楃涓?
+              // In JSON mode, image fields should always store resolved URLs.
+              // Normalize each image field to a valid URL string or null.
               for (const imageField of imageFields) {
                 if (itemData.hasOwnProperty(imageField)) {
                   const value = itemData[imageField];
-                  // 纭繚鍊兼槸鏈夋晥鐨刄RL瀛楃涓诧紙浠ttp://鎴杊ttps://寮€澶达級
+                  // Keep only valid http/https URLs.
                   if (value && typeof value === 'string') {
                     const trimmedValue = value.trim();
-                    // 楠岃瘉鏄惁涓烘湁鏁堢殑URL鏍煎紡
+                    // Validate URL shape.
                     if (trimmedValue && (trimmedValue.startsWith('http://') || trimmedValue.startsWith('https://'))) {
-                      // 鍊煎凡缁忔槸鏈夋晥鐨刄RL锛屼繚瀛楿RL瀛楃涓?
+                      // Already a valid URL; keep the trimmed string.
                       itemData[imageField] = trimmedValue;
                     } else {
-                      // 濡傛灉涓嶆槸鏈夋晥鐨刄RL鏍煎紡锛岃缃负null
+                      // Invalid URL value; normalize to null.
                       itemData[imageField] = null;
-                      logger.log(`瀛楁 ${imageField} 鐨勫€?"${trimmedValue}" 涓嶆槸鏈夋晥鐨刄RL鏍煎紡锛屽凡璁剧疆涓簄ull`);
+                      logger.log(
+                        `Field ${imageField} has invalid URL "${trimmedValue}", normalized to null`,
+                      );
                     }
                   } else if (value !== null && value !== undefined) {
-                    // 濡傛灉涓嶆槸瀛楃涓茬被鍨嬶紝璁剧疆涓簄ull
+                    // Non-string image values are normalized to null.
                     itemData[imageField] = null;
-                    logger.log(`瀛楁 ${imageField} 鐨勫€间笉鏄瓧绗︿覆绫诲瀷锛屽凡璁剧疆涓簄ull`);
+                    logger.log(
+                      `Field ${imageField} is not a string URL, normalized to null`,
+                    );
                   }
                 }
               }
 
-              // 鍙繚瀛樼敤鎴疯嚜瀹氫箟鐨勯€夋嫨鍣ㄦ暟鎹紝涓嶆坊鍔犱换浣曟棤鍏冲瓧娈?
+              // Only persist user-defined selector fields.
               await dataset.pushData(itemData);
               currentCount++;
             }
 
             logger.log(`Extracted ${extractedItems.length} records and kept ${validItems.length} valid records`);
 
-            // 绱姞鍒版€荤粺璁?
+            // Aggregate totals for the final execution summary.
             totalExtractedItems += extractedItems.length;
             totalValidItems += validItems.length;
 
-            // 鏁版嵁淇濆瓨瀹屾垚锛屽紑濮嬫埅鍥?
+            // Data has been saved; try generating a representative screenshot.
             await updateDetailedProgress(85, 'Data saved, generating screenshot');
 
-            // 鍙繚瀛樼涓€涓猆RL锛坆ase URL锛夌殑鎴浘璺緞鍒版暟鎹簱
+            // Only persist the primary screenshot for the first/base request.
             const shouldSavePrimaryScreenshot =
               !screenshotRelativePath &&
               (requestIndex === 1 || isSameUrl(request.url, baseRequestUrl));
 
             try {
               if (page.isClosed()) {
-                logger.warn(`椤甸潰宸插叧闂紝璺宠繃鎴浘 (璇锋眰 ${requestIndex}/${totalRequests})`);
+                logger.warn(`页面已关闭，跳过截图（请求 ${requestIndex}/${totalRequests}）`);
               } else if (shouldSavePrimaryScreenshot) {
-                // 纭繚鍦ㄥ垪琛ㄩ〉闈㈡埅鍥撅紙濡傛灉鎻愬彇浜唒arentLink瀛楁锛屽彲鑳藉凡缁忓鑸埌瀛愰摼鎺ワ級
-                // 瀵逛簬baseSelector鐨勬儏鍐碉紝纭繚鍥炲埌鍘熷鍒楄〃椤甸潰
                 if (config.baseSelector && page.url() !== request.url) {
-                  logger.log(`褰撳墠涓嶅湪鍒楄〃椤甸潰锛屽鑸洖鍒楄〃椤甸潰杩涜鎴浘: ${request.url}`);
+                  logger.log(`当前不在列表页，先返回后再截图: ${request.url}`);
                   await page.goto(request.url, {
                     waitUntil: 'domcontentloaded',
                     timeout: config.navigationTimeout || 60000,
@@ -690,35 +723,33 @@ export class CrawleeEngineService {
                   await page.waitForTimeout(2000);
                 }
 
-                const screenshot = await page.screenshot({
-                  fullPage: true,
-                  type: 'png',
-                });
+                const screenshot = await page.screenshot(
+                  getStoredTaskScreenshotOptions(),
+                );
 
-                const screenshotFilename = `task_${taskId}_exec_${executionId}_screenshot.png`;
-                screenshotFilePath = `uploads/screenshots/${screenshotFilename}`;
-                screenshotRelativePath = `screenshots/${screenshotFilename}`;
+                const screenshotPaths = getScreenshotStoragePaths(
+                  taskId,
+                  executionId,
+                );
+                screenshotFilePath = screenshotPaths.absoluteFilePath;
+                screenshotRelativePath = screenshotPaths.relativePath;
 
-                const screenshotDir = 'uploads/screenshots';
-                await fs.mkdir(screenshotDir, { recursive: true });
-                await fs.writeFile(screenshotFilePath, screenshot);
-                
-                logger.log(`宸蹭繚瀛榖ase URL鎴浘: ${screenshotRelativePath}`);
-                
+                await fs.mkdir(screenshotPaths.absoluteDir, { recursive: true });
+                await fs.writeFile(screenshotPaths.absoluteFilePath, screenshot);
+
+                logger.log(`已保存主截图: ${screenshotRelativePath}`);
+
                 const screenshotKey = `screenshot-${request.id}`;
                 await keyValueStore.setValue(screenshotKey, screenshot);
               } else {
-                const screenshot = await page.screenshot({
-                  fullPage: true,
-                  type: 'png',
-                });
-                const screenshotKey = `screenshot-${request.id}`;
-                await keyValueStore.setValue(screenshotKey, screenshot);
-                logger.log(`璺宠繃闈瀊ase URL鐨勬埅鍥句繚瀛?(璇锋眰 ${requestIndex}/${totalRequests})`);
+                const screenshot = await page.screenshot(
+                  getStoredTaskScreenshotOptions(),
+                );
+                await keyValueStore.setValue(`screenshot-${request.id}`, screenshot);
               }
             } catch (screenshotError) {
               logger.warn(
-                `鎴浘闃舵澶辫触锛屽凡蹇界暐骞剁户缁换鍔? ${
+                `截图阶段失败，已忽略并继续任务: ${
                   screenshotError instanceof Error
                     ? screenshotError.message
                     : String(screenshotError)
@@ -726,31 +757,37 @@ export class CrawleeEngineService {
               );
             }
 
-            await updateDetailedProgress(95, `鎴浘鐢熸垚瀹屾垚`);
+            await updateDetailedProgress(95, '截图生成完成');
 
           } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error || '鏈煡閿欒');
-            const errorObj = error instanceof Error ? error : new Error(String(error || '鏈煡閿欒'));
+            const errorMessage =
+              error instanceof Error ? error.message : String(error || 'Unknown error');
+            const errorObj =
+              error instanceof Error
+                ? error
+                : new Error(String(error || 'Unknown error'));
             if (
               requestIndex === 1 &&
               !screenshotRelativePath &&
               !page.isClosed?.()
             ) {
               try {
-                logger.warn(`椤甸潰澶勭悊澶辫触锛屽皾璇曞厹搴曚繚瀛橀椤垫埅鍥? ${request.url}`);
-                const screenshot = await page.screenshot({
-                  fullPage: true,
-                  type: 'png',
-                });
-                const screenshotFilename = `task_${taskId}_exec_${executionId}_screenshot.png`;
-                screenshotFilePath = `uploads/screenshots/${screenshotFilename}`;
-                screenshotRelativePath = `screenshots/${screenshotFilename}`;
-                await fs.mkdir('uploads/screenshots', { recursive: true });
-                await fs.writeFile(screenshotFilePath, screenshot);
+                logger.warn(`页面处理失败，尝试兜底保存首屏截图: ${request.url}`);
+                const screenshot = await page.screenshot(
+                  getStoredTaskScreenshotOptions(),
+                );
+                const screenshotPaths = getScreenshotStoragePaths(
+                  taskId,
+                  executionId,
+                );
+                screenshotFilePath = screenshotPaths.absoluteFilePath;
+                screenshotRelativePath = screenshotPaths.relativePath;
+                await fs.mkdir(screenshotPaths.absoluteDir, { recursive: true });
+                await fs.writeFile(screenshotPaths.absoluteFilePath, screenshot);
                 await keyValueStore.setValue(`screenshot-${request.id}`, screenshot);
               } catch (fallbackScreenshotError) {
                 logger.warn(
-                  `鍏滃簳鎴浘澶辫触: ${
+                  `兜底截图失败: ${
                     fallbackScreenshotError instanceof Error
                       ? fallbackScreenshotError.message
                       : String(fallbackScreenshotError)
@@ -758,13 +795,13 @@ export class CrawleeEngineService {
                 );
               }
             }
-            logger.error(`澶勭悊椤甸潰澶辫触 ${request.url}: ${errorMessage}`, errorObj);
+            logger.error(`Failed to process page ${request.url}: ${errorMessage}`, errorObj);
             throw errorObj;
           }
         },
       });
 
-      // 鎵ц鐖櫕
+      // Run the task-scoped crawler.
       activeTask.crawler = taskCrawler;
       await taskCrawler.run();
 
@@ -779,49 +816,49 @@ export class CrawleeEngineService {
         return;
       }
 
-      // 鑾峰彇缁熻淇℃伅
+      // Collect summary stats.
       const datasetInfo = await dataset.getInfo();
       const stats = taskCrawler.stats;
 
-      // 鑾峰彇鎵€鏈夌埇鍙栫殑鏁版嵁
+      // Load the extracted data for result packaging and notifications.
       const allData = await dataset.getData();
       const itemCount = allData.items.length;
 
-      // 濡傛灉鏈€缁堢粨鏋滄暟缁勯暱搴︿负 0锛岃涓轰换鍔″け璐?
+      // Treat an empty final result array as a task failure.
       if (Array.isArray(allData?.items) && allData.items.length === 0) {
         const errorMessage = 'Task failed: no valid data collected (final result array length was 0)';
         this.logger.error(errorMessage);
         throw new Error(errorMessage);
       }
 
-      // 缁熶竴淇濆瓨涓篔SON鏂囦欢
+      // Persist results as a JSON file.
       const path = require('path');
       const resultFilename = `task_${taskId}_exec_${executionId}_results.json`;
       const resultFilePath = `uploads/results/${resultFilename}`;
 
-      // 纭繚鐩綍瀛樺湪
+      // Ensure the output directory exists.
       const resultDir = path.dirname(resultFilePath);
       await fs.mkdir(resultDir, { recursive: true });
 
-      // 鍐欏叆缁撴灉鏂囦欢
+      // Write result file.
       await fs.writeFile(resultFilePath, JSON.stringify(allData.items, null, 2));
 
-      // 鏇存柊鎵ц璁板綍锛屼繚瀛樼粨鏋滄枃浠惰矾寰?
+      // Store the result file path on the execution record.
       await this.executionRepository.update(executionId, {
         resultPath: resultFilePath,
       });
 
-      // 鏇存柊鎵ц鐘舵€佷负鎴愬姛
+      // Mark execution as successful.
       const totalRequests = config.urls.length;
-      const filteredItemCount = totalValidItems; // 浣跨敤杩囨护鍚庣殑鏁版嵁鏁伴噺
+      const filteredItemCount = totalValidItems; // Use the post-filter item count.
       let resultMessage = `Execution succeeded: processed ${totalRequests}/${totalRequests} requests and collected ${filteredItemCount} valid records`;
 
       if (config.maxItems && filteredItemCount >= config.maxItems) {
-        resultMessage += ` (杈惧埌鏈€澶ф暟閲忛檺鍒?${config.maxItems})`;
+        resultMessage += ` (reached max item limit ${config.maxItems})`;
       }
 
       if (totalExtractedItems > totalValidItems) {
-        resultMessage += ` (宸茶繃婊?${totalExtractedItems - totalValidItems} 鏉＄┖鏁版嵁)`;
+        resultMessage += ` (filtered out ${totalExtractedItems - totalValidItems} empty record(s))`;
       }
 
       if (this.isTaskStopRequested(taskId)) {
@@ -835,50 +872,131 @@ export class CrawleeEngineService {
         return;
       }
 
-      await this.updateExecutionStatus(executionId, 'success', resultMessage);
+      let broadcastedScreenshotPath: string | undefined =
+        screenshotRelativePath ?? undefined;
 
-      // 鏇存柊浠诲姟鐨勬埅鍥捐矾寰勶紙鎴浘宸插湪requestHandler涓繚瀛橈級
+      // Persist the already-generated screenshot path before the success sync refresh runs.
       try {
-        logger.log(`鍑嗗鏇存柊鎴浘璺緞 - screenshotFilePath: ${screenshotFilePath}, screenshotRelativePath: ${screenshotRelativePath}`);
-        
-        // 妫€鏌ユ枃浠舵槸鍚﹀瓨鍦?
-        if (screenshotFilePath && existsSync(screenshotFilePath)) {
-          // 鏇存柊浠诲姟鐨剆creenshotPath锛堜繚瀛樼浉瀵硅矾寰勶級
+        logger.log(
+          `Preparing to persist screenshot path. screenshotFilePath=${screenshotFilePath}, screenshotRelativePath=${screenshotRelativePath}`,
+        );
+
+        if (
+          screenshotFilePath &&
+          screenshotRelativePath &&
+          existsSync(screenshotFilePath)
+        ) {
           await this.taskRepository.update(taskId, {
-            screenshotPath: screenshotRelativePath ?? undefined,
+            screenshotPath: screenshotRelativePath,
           });
 
-          logger.log(`鎴浘璺緞宸叉洿鏂板埌鏁版嵁搴? ${screenshotRelativePath}`);
+          logger.log(`Screenshot path persisted: ${screenshotRelativePath}`);
         } else {
-          logger.warn(`鎴浘鏂囦欢涓嶅瓨鍦ㄦ垨璺緞涓虹┖ - screenshotFilePath: ${screenshotFilePath}, exists: ${screenshotFilePath ? existsSync(screenshotFilePath) : false}`);
+          logger.warn(
+            `Screenshot file missing or empty path. screenshotFilePath=${screenshotFilePath}, exists=${
+              screenshotFilePath ? existsSync(screenshotFilePath) : false
+            }`,
+          );
         }
       } catch (error) {
-        logger.error('鏇存柊鎴浘璺緞澶辫触:', error);
+        logger.error('Failed to persist screenshot path:', error);
       }
 
-      // 鑾峰彇浠诲姟淇℃伅鐢ㄤ簬骞挎挱
-      const taskSuccessInfo = await this.taskRepository.findOne({
-        where: { id: taskId },
-      });
+      activeTask.terminalStatus = 'success';
+      activeTask.terminalReason = resultMessage;
+      const executionMarkedSuccess = await this.persistTerminalExecutionStatus(
+        executionId,
+        'success',
+        resultMessage,
+        resultFilePath,
+      );
 
-      // 骞挎挱浠诲姟瀹屾垚鐘舵€?
-      this.taskGateway.broadcastTaskUpdate({
-        taskId,
-        taskName: taskSuccessInfo?.name,
-        taskUrl: taskSuccessInfo?.url,
-        status: 'success',
-        progress: 100,
-      });
+      if (!executionMarkedSuccess) {
+        logger.warn(
+          `Execution ${executionId} could not be verified as success; task ${taskId} will still be exposed as success`,
+        );
+      }
 
-      this.logger.log(`浠诲姟 ${taskId} 鎵ц瀹屾垚: ${resultMessage}, 缁撴灉淇濆瓨鑷? ${resultFilePath}`);
+      await this.taskRepository
+        .update(taskId, {
+          status: 'success',
+          endTime: new Date(),
+        })
+        .catch((error) => {
+          logger.error('Failed to persist task success status:', error);
+        });
 
-      // 鏇存柊Task鐨別ndTime
-      await this.taskRepository.update(taskId, {
-        status: 'success',
-        endTime: new Date(),
-      });
+      // Broadcast success before any slow fallback work so the UI leaves the running state promptly.
+      try {
+        this.taskGateway.broadcastTaskUpdate(
+          {
+            taskId,
+            taskName: taskInfo?.name,
+            taskUrl: taskInfo?.url,
+            status: 'success',
+            progress: 100,
+            screenshotPath: broadcastedScreenshotPath,
+          },
+          taskInfo?.userId,
+        );
+      } catch (error) {
+        logger.error('Failed to broadcast task success status:', error);
+      }
 
-      // 娓呯悊璧勬簮
+      this.logger.log(
+        `Task ${taskId} completed successfully: ${resultMessage}. Result saved to ${resultFilePath}`,
+      );
+
+      // Slow post-success housekeeping should not move the task back to failed.
+      if ((!screenshotFilePath || !existsSync(screenshotFilePath)) && baseRequestUrl) {
+        try {
+          const fallbackCapture = await this.captureTaskScreenshotFallback(
+            taskId,
+            executionId,
+            config,
+            baseRequestUrl,
+          );
+          if (fallbackCapture) {
+            screenshotFilePath = fallbackCapture.filePath;
+            screenshotRelativePath = fallbackCapture.relativePath;
+          }
+        } catch (error) {
+          logger.warn(
+            `Post-success fallback screenshot failed for task ${taskId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+
+      if (
+        screenshotFilePath &&
+        screenshotRelativePath &&
+        existsSync(screenshotFilePath) &&
+        screenshotRelativePath !== broadcastedScreenshotPath
+      ) {
+        try {
+          await this.taskRepository.update(taskId, {
+            screenshotPath: screenshotRelativePath,
+          });
+
+          broadcastedScreenshotPath = screenshotRelativePath;
+          this.taskGateway.broadcastTaskUpdate(
+            {
+              taskId,
+              taskName: taskInfo?.name,
+              taskUrl: taskInfo?.url,
+              status: 'success',
+              progress: 100,
+              screenshotPath: broadcastedScreenshotPath,
+            },
+            taskInfo?.userId,
+          );
+        } catch (error) {
+          logger.error('Failed to persist post-success screenshot path:', error);
+        }
+      }
+
       await this.sendTaskExecutionNotification({
         taskId,
         executionId,
@@ -887,12 +1005,28 @@ export class CrawleeEngineService {
         log: resultMessage,
         itemCount: filteredItemCount,
         previewItems: allData.items,
+      }).catch((error) => {
+        logger.warn(
+          `Success notification failed after task ${taskId} was already completed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
       });
-      await requestQueue.drop();
-      // 娉ㄦ剰锛欴ataset鍜孠eyValueStore閫氬父淇濈暀鐢ㄤ簬鍚庣画鍒嗘瀽
+      await requestQueue.drop().catch((error) => {
+        logger.warn(
+          `Request queue cleanup failed after task ${taskId} completed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+      // Dataset and KeyValueStore are intentionally kept for later inspection.
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error || '鏈煡閿欒');
-      const errorObj = error instanceof Error ? error : new Error(String(error || '鏈煡閿欒'));
+      const errorMessage =
+        error instanceof Error ? error.message : String(error || 'Unknown error');
+      const errorObj =
+        error instanceof Error
+          ? error
+          : new Error(String(error || 'Unknown error'));
       if (this.isTaskStopRequested(taskId)) {
         await this.finalizeStoppedTask(
           taskId,
@@ -902,20 +1036,26 @@ export class CrawleeEngineService {
         );
         return;
       }
-      this.logger.error(`浠诲姟 ${taskId} 鎵ц澶辫触:`, errorObj);
-      await this.updateExecutionStatus(
+      activeTask.terminalStatus = 'failed';
+      activeTask.terminalReason = `Task failed: ${errorMessage}`;
+      await Promise.allSettled([
+        activeTask.crawler?.teardown() ?? Promise.resolve(),
+        this.closeDetachedDetailBrowser(),
+      ]);
+      this.logger.error(`Task ${taskId} execution failed:`, errorObj);
+      await this.persistTerminalExecutionStatus(
         executionId,
         'failed',
-        `鎵ц澶辫触: ${errorMessage}`,
+        `Task failed: ${errorMessage}`,
       );
 
-      // 鏇存柊Task鐨別ndTime鍜岀姸鎬?
+      // Update task status and endTime.
       await this.taskRepository.update(taskId, {
         status: 'failed',
         endTime: new Date(),
       });
 
-      // 鑾峰彇浠诲姟淇℃伅鐢ㄤ簬骞挎挱
+      // Send failure notification and load task info for broadcast.
       await this.sendTaskExecutionNotification({
         taskId,
         executionId,
@@ -926,16 +1066,18 @@ export class CrawleeEngineService {
 
       const taskFailedInfo = await this.taskRepository.findOne({
         where: { id: taskId },
+        select: ['id', 'name', 'url', 'userId', 'screenshotPath'],
       });
 
-      // 骞挎挱浠诲姟澶辫触鐘舵€?
+      // Broadcast failure status.
       this.taskGateway.broadcastTaskUpdate({
         taskId,
         taskName: taskFailedInfo?.name,
         taskUrl: taskFailedInfo?.url,
         status: 'failed',
         progress: 0,
-      });
+        screenshotPath: taskFailedInfo?.screenshotPath ?? screenshotRelativePath,
+      }, taskFailedInfo?.userId);
 
       throw error;
     } finally {
@@ -946,7 +1088,7 @@ export class CrawleeEngineService {
   }
 
   /**
-   * 浠庨€夋嫨鍣ㄦ彁鍙栨暟鎹?
+   * Extract data from a page-level selector.
    */
   private async extractDataFromSelector(
     page: any,
@@ -957,23 +1099,20 @@ export class CrawleeEngineService {
 
     try {
       if (page?.isClosed?.()) {
-        extractedData[name] = null;
+        this.setExtractedFieldValue(extractedData, selectorConfig, null);
         return;
       }
 
-      // 澶勭悊涓嶅悓绫诲瀷鐨勯€夋嫨鍣紝杞崲涓?Playwright 鏀寔鐨勬牸寮?
+      // Normalize selector syntax into a Playwright-compatible locator.
       let finalSelector: string;
-      if (selector.startsWith('.//')) {
-        finalSelector = `xpath=${selector}`;
-      } else if (selector.startsWith('//')) {
-        // XPath缁濆璺緞
-        finalSelector = `xpath=${selector}`;
+      if (this.isXPathSelector(selector)) {
+        finalSelector = `xpath=${this.toPageLevelXPath(selector)}`;
       } else {
-        // CSS閫夋嫨鍣ㄦ垨鍏朵粬
+        // CSS selector or other Playwright-supported selector.
         finalSelector = selector;
       }
 
-      // 绠€鍖栭€昏緫锛氭瘡涓€夋嫨鍣ㄥ彧鎻愬彇涓€涓€硷紝濡傛灉鎵句笉鍒板垯璁句负null
+      // Simplified mode: each selector extracts only one value; missing values become null.
       const element = page.locator(finalSelector).first();
       let value: string | null = null;
 
@@ -981,7 +1120,7 @@ export class CrawleeEngineService {
         case 'text': {
           const format = contentFormat || 'text';
           if (format === 'html' || format === 'markdown' || format === 'smart') {
-            // 鍏堟嬁鍒板厓绱?HTML锛屽啀鏍规嵁閰嶇疆鍐冲畾鏄惁杞负 Markdown
+            // Read the raw HTML first, then decide whether to format it as HTML/Markdown.
             const html = await element.innerHTML();
             value =
               format === 'html'
@@ -994,35 +1133,35 @@ export class CrawleeEngineService {
         }
         case 'link':
           value = await element.getAttribute('href');
-          // 灏嗙浉瀵筓RL杞崲涓虹粷瀵筓RL
+          // Resolve relative URLs against the current page URL.
           if (value) {
             try {
               const pageUrl = page.url();
               value = new URL(value, pageUrl).href;
             } catch (urlError) {
-              // 濡傛灉URL杞崲澶辫触锛屼繚鎸佸師鍊?
+              // If URL resolution fails, keep the original value.
               this.logger.warn(`Failed to resolve relative URL "${value}"`, urlError);
             }
           }
           break;
         case 'image':
-          // 鍏堝皾璇曡幏鍙?src 灞炴€?
+          // Try src first.
           value = await element.getAttribute('src');
-          // 濡傛灉 src 涓虹┖锛屽皾璇曡幏鍙?data-src锛堟噿鍔犺浇鍥剧墖锛?
+          // Fall back to data-src for lazy-loaded images.
           if (!value) {
             value = await element.getAttribute('data-src');
           }
-          // 濡傛灉杩樻槸涓虹┖锛屽皾璇曡幏鍙?data-original锛堝彟涓€绉嶆噿鍔犺浇鏂瑰紡锛?
+          // Fall back to data-original for another common lazy-load pattern.
           if (!value) {
             value = await element.getAttribute('data-original');
           }
-          // 灏嗙浉瀵筓RL杞崲涓虹粷瀵筓RL
+          // Resolve relative URLs against the current page URL.
           if (value) {
             try {
               const pageUrl = page.url();
               value = new URL(value, pageUrl).href;
             } catch (urlError) {
-              // 濡傛灉URL杞崲澶辫触锛屼繚鎸佸師鍊?
+              // If URL resolution fails, keep the original value.
               this.logger.warn(`Failed to resolve relative URL "${value}"`, urlError);
             }
           }
@@ -1031,20 +1170,24 @@ export class CrawleeEngineService {
           value = await element.textContent();
       }
 
-      extractedData[name] = this.applySelectorTransform(
-        selectorConfig,
-        value,
+      this.setExtractedFieldValue(
         extractedData,
-        page.url(),
+        selectorConfig,
+        this.applySelectorTransform(
+          selectorConfig,
+          value,
+          extractedData,
+          page.url(),
+        ),
       );
     } catch (error) {
-      // 濡傛灉鎵句笉鍒板厓绱狅紝璁句负null浣嗕笉鎶涘嚭閿欒
-      extractedData[name] = null;
+      // If the element cannot be found, store null instead of throwing.
+      this.setExtractedFieldValue(extractedData, selectorConfig, null);
     }
   }
 
   /**
-   * 浠庢寚瀹氬厓绱犱腑鎻愬彇鏁版嵁锛堢浉瀵逛簬鍩虹鍏冪礌锛?
+   * Extract data from a selector relative to the current base element.
    */
   private async extractDataFromElement(
     baseElement: any,
@@ -1056,30 +1199,33 @@ export class CrawleeEngineService {
 
     try {
       if (page?.isClosed?.()) {
-        extractedData[name] = null;
+        this.setExtractedFieldValue(extractedData, selectorConfig, null);
         return;
       }
 
       let element;
 
-      // 澶勭悊涓嶅悓绫诲瀷鐨勯€夋嫨鍣?
-      if (selector.startsWith('.//')) {
-        // XPath鐩稿璺緞锛氱浉瀵逛簬baseElement锛屼繚鐣?//鍓嶇紑
-        element = baseElement.locator(`xpath=${selector}`).first();
-      } else if (selector.startsWith('//')) {
-        // XPath缁濆璺緞锛氫粠椤甸潰鏍硅妭鐐规煡鎵撅紝閬垮厤娣卞眰宓屽鏃跺湪 baseElement 涓婁笅鏂囦腑鍖归厤涓嶅埌
-        element = page.locator(`xpath=${selector}`).first();
+      // Normalize selector behavior relative to the base element.
+      if (this.isXPathSelector(selector)) {
+        const expression = this.getXPathExpression(selector);
+        if (this.isRelativeXPathExpression(expression)) {
+          // Relative XPath, evaluated against baseElement.
+          element = baseElement.locator(`xpath=${expression}`).first();
+        } else {
+          // Absolute XPath, evaluated from the page root to avoid deep nesting mismatches.
+          element = page.locator(`xpath=${expression}`).first();
+        }
       } else {
-        // CSS閫夋嫨鍣ㄦ垨鍏朵粬锛氱浉瀵逛簬baseElement
+        // CSS selector or other Playwright selector relative to baseElement.
         element = baseElement.locator(selector).first();
       }
 
-      // 璋冭瘯锛氭鏌ュ厓绱犳槸鍚﹀瓨鍦?
+      // Debug: check whether the element exists.
       const count = await element.count();
       this.logger.debug(`Field ${name}: selector "${selector}" matched ${count} elements relative to the base element`);
 
       if (count === 0) {
-        extractedData[name] = null;
+        this.setExtractedFieldValue(extractedData, selectorConfig, null);
         return;
       }
 
@@ -1101,35 +1247,35 @@ export class CrawleeEngineService {
         }
         case 'link':
           value = await element.getAttribute('href');
-          // 灏嗙浉瀵筓RL杞崲涓虹粷瀵筓RL
+          // Resolve relative URLs against the current page URL.
           if (value) {
             try {
               const pageUrl = page.url();
               value = new URL(value, pageUrl).href;
             } catch (urlError) {
-              // 濡傛灉URL杞崲澶辫触锛屼繚鎸佸師鍊?
+              // If URL resolution fails, keep the original value.
               this.logger.warn(`Failed to resolve relative URL "${value}"`, urlError);
             }
           }
           break;
         case 'image':
-          // 鍏堝皾璇曡幏鍙?src 灞炴€?
+          // Try src first.
           value = await element.getAttribute('src');
-          // 濡傛灉 src 涓虹┖锛屽皾璇曡幏鍙?data-src锛堟噿鍔犺浇鍥剧墖锛?
+          // Fall back to data-src for lazy-loaded images.
           if (!value) {
             value = await element.getAttribute('data-src');
           }
-          // 濡傛灉杩樻槸涓虹┖锛屽皾璇曡幏鍙?data-original锛堝彟涓€绉嶆噿鍔犺浇鏂瑰紡锛?
+          // Fall back to data-original for another common lazy-load pattern.
           if (!value) {
             value = await element.getAttribute('data-original');
           }
-          // 灏嗙浉瀵筓RL杞崲涓虹粷瀵筓RL
+          // Resolve relative URLs against the current page URL.
           if (value) {
             try {
               const pageUrl = page.url();
               value = new URL(value, pageUrl).href;
             } catch (urlError) {
-              // 濡傛灉URL杞崲澶辫触锛屼繚鎸佸師鍊?
+              // If URL resolution fails, keep the original value.
               this.logger.warn(`Failed to resolve relative URL "${value}"`, urlError);
             }
           }
@@ -1138,21 +1284,25 @@ export class CrawleeEngineService {
           value = await element.textContent();
       }
 
-      extractedData[name] = this.applySelectorTransform(
-        selectorConfig,
-        value,
+      this.setExtractedFieldValue(
         extractedData,
-        page.url(),
+        selectorConfig,
+        this.applySelectorTransform(
+          selectorConfig,
+          value,
+          extractedData,
+          page.url(),
+        ),
       );
-      this.logger.debug(`瀛楁 ${name}: 鎻愬彇鍊?"${extractedData[name]}"`);
+      this.logger.debug(`Field ${name}: extracted value "${extractedData[name]}"`);
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error || 'unknown');
       if (!/Target page, context or browser has been closed/i.test(errorMessage)) {
-        this.logger.error(`瀛楁 ${name} 鎻愬彇閿欒`, error);
+        this.logger.error(`Field ${name} extraction failed`, error);
       }
-      // 濡傛灉鎵句笉鍒板厓绱狅紝璁句负null浣嗕笉鎶涘嚭閿欒
-      extractedData[name] = null;
+      // If the element cannot be found, store null instead of throwing.
+      this.setExtractedFieldValue(extractedData, selectorConfig, null);
     }
   }
 
@@ -1181,7 +1331,7 @@ export class CrawleeEngineService {
     ) {
       const retryDelayMs = this.getRetryDelayMs(config, attempt);
       this.logger.debug(
-        `字段 ${selectorConfig.name} 第 ${attempt} 次重试，当前值: ${currentValue ?? 'null'}`,
+        `Field ${selectorConfig.name} retry ${attempt}: current value ${currentValue ?? 'null'}`,
       );
       await this.waitBeforeRetry(page, retryDelayMs);
       if (page?.isClosed?.()) {
@@ -1198,7 +1348,7 @@ export class CrawleeEngineService {
     }
 
     if (this.shouldRetrySelectorValue(selectorConfig, currentValue)) {
-      extractedData[selectorConfig.name] = null;
+      this.setExtractedFieldValue(extractedData, selectorConfig, null);
     }
   }
 
@@ -1227,30 +1377,232 @@ export class CrawleeEngineService {
     return false;
   }
 
+  private getXPathExpression(selector: string): string {
+    const normalized = String(selector || '').trim();
+    return normalized.startsWith('xpath=')
+      ? normalized.slice('xpath='.length)
+      : normalized;
+  }
+
+  private isRelativeXPathExpression(expression: string): boolean {
+    return expression.startsWith('.//') || expression.startsWith('./');
+  }
+
+  private isXPathSelector(selector?: string): boolean {
+    const normalized = String(selector || '').trim();
+    return (
+      normalized.startsWith('xpath=') ||
+      normalized.startsWith('//') ||
+      normalized.startsWith('.//') ||
+      normalized.startsWith('./')
+    );
+  }
+
+  private toPageLevelXPath(selector: string): string {
+    const expression = this.getXPathExpression(selector);
+    return this.isRelativeXPathExpression(expression)
+      ? expression.substring(1)
+      : expression;
+  }
+
+  private getScopedLocator(
+    scope: any,
+    selector: string,
+    page: any,
+  ): any {
+    if (this.isXPathSelector(selector)) {
+      const expression = this.getXPathExpression(selector);
+      if (this.isRelativeXPathExpression(expression)) {
+        return scope.locator(`xpath=${expression}`);
+      }
+      return page.locator(`xpath=${expression}`);
+    }
+
+    return scope.locator(selector);
+  }
+
+  private async extractRawValueFromLocatorElement(
+    element: any,
+    selectorConfig: SelectorConfig,
+    page: any,
+  ): Promise<string | null> {
+    const { type, contentFormat } = selectorConfig;
+
+    switch (type) {
+      case 'text': {
+        const format = contentFormat || 'text';
+        if (format === 'html' || format === 'markdown' || format === 'smart') {
+          const html = await element.innerHTML();
+          return format === 'html'
+            ? html
+            : formatHtmlFragment(html, format, page.url());
+        }
+
+        return await element.textContent();
+      }
+      case 'link': {
+        const href = await element.getAttribute('href');
+        if (!href) {
+          return null;
+        }
+
+        try {
+          return new URL(href, page.url()).href;
+        } catch (urlError) {
+          this.logger.warn(`Failed to resolve relative URL "${href}"`, urlError);
+          return href;
+        }
+      }
+      case 'image': {
+        let src = await element.getAttribute('src');
+        if (!src) {
+          src = await element.getAttribute('data-src');
+        }
+        if (!src) {
+          src = await element.getAttribute('data-original');
+        }
+        if (!src) {
+          return null;
+        }
+
+        try {
+          return new URL(src, page.url()).href;
+        } catch (urlError) {
+          this.logger.warn(`Failed to resolve relative URL "${src}"`, urlError);
+          return src;
+        }
+      }
+      default:
+        return await element.textContent();
+    }
+  }
+
+  private flattenCollectedValues(value: unknown): unknown[] {
+    if (Array.isArray(value)) {
+      return value.flatMap((item) => this.flattenCollectedValues(item));
+    }
+
+    return [value];
+  }
+
+  private createValueSignature(value: unknown): string {
+    if (typeof value === 'string') {
+      return value;
+    }
+
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+
+  private normalizeCollectedValues(
+    selectorType: SelectorConfig['type'],
+    values: unknown[],
+  ): any {
+    const dedupedValues: unknown[] = [];
+    const seen = new Set<string>();
+
+    for (const value of values) {
+      if (!this.hasMeaningfulValue(value)) {
+        continue;
+      }
+
+      if (this.isLikelyGlobalNavigationValue(selectorType, value)) {
+        continue;
+      }
+
+      const signature = this.createValueSignature(value);
+      if (seen.has(signature)) {
+        continue;
+      }
+
+      seen.add(signature);
+      dedupedValues.push(value);
+    }
+
+    if (dedupedValues.length === 0) {
+      return null;
+    }
+
+    return dedupedValues.length === 1 ? dedupedValues[0] : dedupedValues;
+  }
+
+  private async extractValuesFromScope(
+    scope: any,
+    selectorConfig: SelectorConfig,
+    itemData: Record<string, any>,
+    page: any,
+  ): Promise<any> {
+    if (page?.isClosed?.()) {
+      return null;
+    }
+
+    try {
+      const locator = this.getScopedLocator(scope, selectorConfig.selector, page);
+      const count = Math.min(await locator.count(), 50);
+      if (count === 0) {
+        return null;
+      }
+
+      const values: unknown[] = [];
+      for (let i = 0; i < count; i++) {
+        const rawValue = await this.extractRawValueFromLocatorElement(
+          locator.nth(i),
+          selectorConfig,
+          page,
+        );
+        const transformedValue = this.applySelectorTransform(
+          selectorConfig,
+          rawValue,
+          itemData,
+          page.url(),
+        );
+
+        if (this.hasMeaningfulValue(transformedValue)) {
+          values.push(...this.flattenCollectedValues(transformedValue));
+        }
+      }
+
+      return this.normalizeCollectedValues(selectorConfig.type, values);
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error || 'unknown');
+      if (!/Target page, context or browser has been closed/i.test(errorMessage)) {
+        this.logger.debug(
+          `Failed to extract multi-value detail selector ${selectorConfig.name}: ${errorMessage}`,
+        );
+      }
+
+      return null;
+    }
+  }
+
   private async tryExtractFromBaseElement(
     baseElement: any,
     selectorConfig: SelectorConfig,
     page: any,
+    itemData: Record<string, any> = {},
   ): Promise<any> {
-    const tempData: Record<string, any> = {};
-    await this.extractDataFromElement(
+    return this.extractValuesFromScope(
       baseElement,
       { ...selectorConfig, parentLink: undefined },
-      tempData,
+      itemData,
       page,
     );
-    return tempData[selectorConfig.name];
   }
 
   private async tryExtractFromCandidateBases(
     detailPage: any,
     selectorConfig: SelectorConfig,
+    itemData: Record<string, any>,
   ): Promise<any> {
     const candidateBaseSelectors: string[] = [];
     if (selectorConfig.detailBaseSelector?.trim()) {
       candidateBaseSelectors.push(selectorConfig.detailBaseSelector.trim());
     } else {
-      // 浠呭湪鏃ч厤缃己灏?detailBaseSelector 鏃讹紝浣跨敤鏈夐檺鍏滃簳鍊欓€?
+      // Only use limited fallback candidates when legacy configs lack detailBaseSelector.
       candidateBaseSelectors.push(
         `//main//*[contains(@class,"relative") and contains(@class,"size-full")]`,
         `//main//article`,
@@ -1264,19 +1616,26 @@ export class CrawleeEngineService {
       try {
         const baseLocator = this.getLocatorFromSelector(detailPage, baseSelector);
         const count = Math.min(await baseLocator.count(), 30);
+        const collectedValues: unknown[] = [];
         for (let i = 0; i < count; i++) {
           const value = await this.tryExtractFromBaseElement(
             baseLocator.nth(i),
             selectorConfig,
             detailPage,
+            itemData,
           );
 
-          if (
-            this.hasMeaningfulValue(value) &&
-            !this.isLikelyGlobalNavigationValue(selectorConfig.type, value)
-          ) {
-            return value;
+          if (this.hasMeaningfulValue(value)) {
+            collectedValues.push(...this.flattenCollectedValues(value));
           }
+        }
+
+        const normalizedValue = this.normalizeCollectedValues(
+          selectorConfig.type,
+          collectedValues,
+        );
+        if (this.hasMeaningfulValue(normalizedValue)) {
+          return normalizedValue;
         }
       } catch {
         // skip invalid candidate selector
@@ -1316,25 +1675,32 @@ export class CrawleeEngineService {
         selectorConfig.detailBaseSelector.trim(),
       );
       const detailBaseCount = Math.min(await detailBaseLocator.count(), 30);
+      const collectedValues: unknown[] = [];
       for (let i = 0; i < detailBaseCount; i++) {
         const candidateValue = await this.tryExtractFromBaseElement(
           detailBaseLocator.nth(i),
           tempSelectorConfig,
           detailPage,
+          itemData,
         );
-        if (
-          this.hasMeaningfulValue(candidateValue) &&
-          !this.isLikelyGlobalNavigationValue(selectorConfig.type, candidateValue)
-        ) {
-          return candidateValue;
+
+        if (this.hasMeaningfulValue(candidateValue)) {
+          collectedValues.push(...this.flattenCollectedValues(candidateValue));
         }
       }
-      return null;
+
+      return this.normalizeCollectedValues(
+        selectorConfig.type,
+        collectedValues,
+      );
     }
 
-    const tempData: Record<string, any> = {};
-    await this.extractDataFromSelector(detailPage, tempSelectorConfig, tempData);
-    let value = tempData[selectorConfig.name];
+    let value = await this.extractValuesFromScope(
+      detailPage,
+      tempSelectorConfig,
+      itemData,
+      detailPage,
+    );
 
     if (
       this.hasMeaningfulValue(value) &&
@@ -1343,10 +1709,11 @@ export class CrawleeEngineService {
       return value;
     }
 
-    if (selectorConfig.selector.startsWith('.//')) {
+    if (this.isRelativeXPathExpression(this.getXPathExpression(selectorConfig.selector))) {
       const candidateValue = await this.tryExtractFromCandidateBases(
         detailPage,
         selectorConfig,
+        itemData,
       );
       if (this.hasMeaningfulValue(candidateValue)) {
         value = candidateValue;
@@ -1363,6 +1730,18 @@ export class CrawleeEngineService {
     config: CrawleeTaskConfig,
   ): Promise<void> {
     const detailPage = await this.createDetachedDetailPage(config);
+    const detailPreActions =
+      selectorConfigs.find((selector) => selector.preActions?.length)?.preActions || [];
+    const detailReadySelector =
+      selectorConfigs.find((selector) => String(selector.detailBaseSelector || '').trim())
+        ?.detailBaseSelector ||
+      selectorConfigs.find((selector) => {
+        const normalizedSelector = String(selector.selector || '').trim();
+        return (
+          normalizedSelector &&
+          !this.isRelativeXPathExpression(this.getXPathExpression(normalizedSelector))
+        );
+      })?.selector;
     try {
       await this.applyConfiguredCookies(detailPage, linkUrl, config);
       await this.waitBeforeNavigation(detailPage, config);
@@ -1370,7 +1749,34 @@ export class CrawleeEngineService {
         waitUntil: 'domcontentloaded',
         timeout: config.navigationTimeout || 60000,
       });
-      await detailPage.waitForTimeout(300);
+      await this.waitForPageSettled(
+        detailPage,
+        config.waitForTimeout || config.navigationTimeout || 30000,
+      );
+
+      if (detailPreActions.length) {
+        await this.executePreActions(
+          detailPage,
+          detailPreActions,
+          config.waitForTimeout || 30000,
+          {
+            ignoreMissingTargets: true,
+          },
+        );
+        await this.waitForPageSettled(
+          detailPage,
+          config.waitForTimeout || config.navigationTimeout || 30000,
+        );
+      }
+
+      if (detailReadySelector) {
+        await this.waitForReadySelector(
+          detailPage,
+          detailReadySelector,
+          config.waitForTimeout || config.navigationTimeout || 30000,
+          'attached',
+        );
+      }
 
       for (const selectorConfig of selectorConfigs) {
         const value = await this.extractSelectorValueFromDetailPageWithRetries(
@@ -1379,7 +1785,7 @@ export class CrawleeEngineService {
           itemData,
           config,
         );
-        itemData[selectorConfig.name] = value;
+        this.setExtractedFieldValue(itemData, selectorConfig, value);
       }
     } finally {
       await detailPage.context().close().catch(() => undefined);
@@ -1395,7 +1801,11 @@ export class CrawleeEngineService {
 
     this.detachedDetailBrowser = await playwright.chromium.launch({
       headless: config.headless !== false,
-      args: ['--disable-blink-features=AutomationControlled'],
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--disable-logging',
+        '--log-level=3',
+      ],
     });
 
     return this.detachedDetailBrowser;
@@ -1404,10 +1814,11 @@ export class CrawleeEngineService {
   private async createDetachedDetailPage(config: CrawleeTaskConfig): Promise<any> {
     const browser = await this.ensureDetachedDetailBrowser(config);
     const context = await browser.newContext({
-      viewport: config.viewport || { width: 1920, height: 1080 },
-      userAgent: config.userAgent || undefined,
+      viewport: this.getEffectiveViewport(config),
+      userAgent: this.getEffectiveUserAgent(config),
       locale: 'zh-CN',
       timezoneId: 'Asia/Shanghai',
+      ignoreHTTPSErrors: true,
     });
 
     await context.addInitScript(() => {
@@ -1415,6 +1826,28 @@ export class CrawleeEngineService {
     });
 
     return context.newPage();
+  }
+
+  private getEffectiveViewport(
+    config?: Pick<CrawleeTaskConfig, 'viewport'>,
+  ): { width: number; height: number } {
+    const configuredWidth = Number(config?.viewport?.width);
+    const configuredHeight = Number(config?.viewport?.height);
+
+    if (configuredWidth > 0 && configuredHeight > 0) {
+      return {
+        width: configuredWidth,
+        height: configuredHeight,
+      };
+    }
+
+    return { ...DEFAULT_RUNTIME_VIEWPORT };
+  }
+
+  private getEffectiveUserAgent(
+    config?: Pick<CrawleeTaskConfig, 'userAgent'>,
+  ): string {
+    return String(config?.userAgent || '').trim() || DEFAULT_RUNTIME_USER_AGENT;
   }
 
   private async closeDetachedDetailBrowser(): Promise<void> {
@@ -1435,6 +1868,12 @@ export class CrawleeEngineService {
     const code = selectorConfig.customTransformCode?.trim();
     if (!code) {
       return normalizedValue;
+    }
+
+    if (!isUnsafeCustomJsEnabled()) {
+      throw new Error(
+        `Field ${selectorConfig.name} customTransformCode is disabled by server policy`,
+      );
     }
 
     try {
@@ -1521,12 +1960,20 @@ export class CrawleeEngineService {
   }
 
   private hasMeaningfulValue(value: unknown): boolean {
+    if (Array.isArray(value)) {
+      return value.some((item) => this.hasMeaningfulValue(item));
+    }
+
     return !(
       value === null ||
       value === undefined ||
       value === '' ||
       value === 'null'
     );
+  }
+
+  private hasMeaningfulItemData(itemData: Record<string, any>): boolean {
+    return Object.values(itemData).some((value) => this.hasMeaningfulValue(value));
   }
 
   private shouldRetrySelectorValue(
@@ -1540,7 +1987,7 @@ export class CrawleeEngineService {
   }
 
   private getEmptyValueRetryCount(config: CrawleeTaskConfig): number {
-    return Math.max(0, Math.min(config.maxRetries ?? 2, 5));
+    return Math.max(0, Math.min(config.maxRetries ?? 2, 2));
   }
 
   private getRetryDelayMs(
@@ -1582,6 +2029,58 @@ export class CrawleeEngineService {
 
     if (delayMs > 0) {
       await page.waitForTimeout(delayMs).catch(() => undefined);
+    }
+  }
+
+  private async waitForPageSettled(
+    page: any,
+    timeoutMs: number,
+    extraDelayMs = 500,
+  ): Promise<void> {
+    if (!page || page?.isClosed?.()) {
+      return;
+    }
+
+    const timeout = Math.max(500, Math.min(timeoutMs || 5000, 10000));
+
+    await page
+      .waitForLoadState('domcontentloaded', { timeout: Math.min(timeout, 5000) })
+      .catch(() => undefined);
+    await page
+      .waitForLoadState('networkidle', { timeout })
+      .catch(() => undefined);
+
+    if (extraDelayMs > 0) {
+      await page.waitForTimeout(extraDelayMs).catch(() => undefined);
+    }
+  }
+
+  private async waitForReadySelector(
+    page: any,
+    selector: string | undefined,
+    timeoutMs: number,
+    state: 'attached' | 'visible' = 'attached',
+  ): Promise<boolean> {
+    const normalizedSelector = String(selector || '').trim();
+    if (!normalizedSelector || !page || page?.isClosed?.()) {
+      return false;
+    }
+
+    try {
+      await this.getLocatorFromSelector(page, normalizedSelector)
+        .first()
+        .waitFor({
+          state,
+          timeout: Math.max(500, Math.min(timeoutMs || 5000, 30000)),
+        });
+      return true;
+    } catch (error) {
+      this.logger.debug(
+        `Ready selector ${normalizedSelector} did not become ${state}: ${
+          error instanceof Error ? error.message : String(error || 'unknown')
+        }`,
+      );
+      return false;
     }
   }
 
@@ -1686,7 +2185,7 @@ export class CrawleeEngineService {
     ) {
       const retryDelayMs = this.getRetryDelayMs(config, attempt);
       this.logger.debug(
-        `详情字段 ${selectorConfig.name} 第 ${attempt} 次重试，当前值: ${value ?? 'null'}`,
+        `Detail field ${selectorConfig.name} retry ${attempt}: current value ${value ?? 'null'}`,
       );
       await this.waitBeforeRetry(detailPage, retryDelayMs);
       if (detailPage?.isClosed?.()) {
@@ -1732,21 +2231,624 @@ export class CrawleeEngineService {
     }
   }
 
+  private async executeBehaviorSteps(
+    page: any,
+    config: CrawleeTaskConfig,
+  ): Promise<Record<string, any>[]> {
+    const context: BehaviorExecutionContext = {
+      page,
+      results: [],
+      config,
+    };
+
+    await this.executeBehaviorStepList(config.behaviorSteps || [], context);
+    return this.collectBehaviorContextResults(context);
+  }
+
+  private async executeBehaviorStepList(
+    steps: BehaviorStep[],
+    context: BehaviorExecutionContext,
+  ): Promise<void> {
+    for (const step of steps) {
+      await this.executeBehaviorStep(step, context);
+    }
+  }
+
+  private async executeBehaviorStep(
+    step: BehaviorStep,
+    context: BehaviorExecutionContext,
+  ): Promise<void> {
+    switch (step.type) {
+      case 'open':
+        await this.runBehaviorOpenStep(step, context);
+        break;
+      case 'click':
+        await this.runBehaviorClickStep(step, context);
+        break;
+      case 'type':
+        await this.runBehaviorTypeStep(step, context);
+        break;
+      case 'wait':
+        await this.runBehaviorWaitStep(step, context);
+        break;
+      case 'extract':
+        await this.runBehaviorExtractStep(step, context);
+        break;
+      case 'scroll':
+        await this.runBehaviorScrollStep(step, context);
+        break;
+      case 'loop':
+        await this.runBehaviorLoopStep(step, context);
+        break;
+      case 'condition':
+        await this.runBehaviorConditionStep(step, context);
+        break;
+      case 'customJS':
+        await this.runBehaviorCustomJSStep(step, context);
+        break;
+      default:
+        this.logger.warn(`Unsupported behavior step type: ${step.type}`);
+        break;
+    }
+
+    if (step.waitAfter && step.waitAfter > 0) {
+      await context.page.waitForTimeout(step.waitAfter);
+    }
+  }
+
+  private getBehaviorStepTimeout(
+    step: Pick<BehaviorStep, 'timeout'>,
+    config: CrawleeTaskConfig,
+    fallback = 10_000,
+  ): number {
+    return Math.max(
+      0,
+      Number(step.timeout ?? config.waitForTimeout ?? fallback) || fallback,
+    );
+  }
+
+  private resolveBehaviorTemplate(
+    template: string | undefined,
+    currentItem?: Record<string, any>,
+  ): string {
+    const source = String(template ?? '');
+    if (!source.includes('{{')) {
+      return source;
+    }
+
+    return source.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, fieldPath) => {
+      const value = this.getNestedBehaviorValue(currentItem, String(fieldPath));
+      return value === null || value === undefined ? '' : String(value);
+    });
+  }
+
+  private getNestedBehaviorValue(
+    item: Record<string, any> | undefined,
+    fieldPath: string,
+  ): unknown {
+    if (!item || !fieldPath) {
+      return undefined;
+    }
+
+    return fieldPath.split('.').reduce<unknown>((current, segment) => {
+      if (!segment) {
+        return current;
+      }
+
+      if (current && typeof current === 'object') {
+        return (current as Record<string, unknown>)[segment];
+      }
+
+      return undefined;
+    }, item);
+  }
+
+  private toBehaviorXPathSelector(
+    selector: string,
+    scoped: boolean,
+  ): string {
+    let normalized = selector.trim();
+    if (normalized.startsWith('xpath=')) {
+      return normalized;
+    }
+
+    if (scoped) {
+      if (normalized.startsWith('//')) {
+        normalized = `.${normalized}`;
+      }
+    } else if (
+      normalized.startsWith('.//') ||
+      normalized.startsWith('./')
+    ) {
+      normalized = normalized.slice(1);
+    }
+
+    return `xpath=${normalized}`;
+  }
+
+  private getBehaviorLocator(
+    context: BehaviorExecutionContext,
+    selector: string,
+  ): any {
+    const target = context.scope || context.page;
+    return target.locator(
+      this.toBehaviorXPathSelector(selector, Boolean(context.scope)),
+    );
+  }
+
+  private getBehaviorDefaultLocator(
+    context: BehaviorExecutionContext,
+    selector?: string,
+  ): any {
+    if (selector?.trim()) {
+      return this.getBehaviorLocator(context, selector);
+    }
+
+    if (context.scope) {
+      return context.scope;
+    }
+
+    return context.page.locator('body');
+  }
+
+  private ensureBehaviorCurrentItem(
+    context: BehaviorExecutionContext,
+  ): Record<string, any> {
+    if (!context.currentItem) {
+      context.currentItem = {};
+    }
+
+    if (!context.results.includes(context.currentItem)) {
+      context.results.push(context.currentItem);
+    }
+
+    return context.currentItem;
+  }
+
+  private collectBehaviorContextResults(
+    context: BehaviorExecutionContext,
+  ): Record<string, any>[] {
+    const results = [...context.results];
+    if (
+      context.currentItem &&
+      !results.includes(context.currentItem) &&
+      Object.keys(context.currentItem).length > 0
+    ) {
+      results.push(context.currentItem);
+    }
+    return results;
+  }
+
+  private async runBehaviorOpenStep(
+    step: BehaviorStep,
+    context: BehaviorExecutionContext,
+  ): Promise<void> {
+    const url = this.resolveBehaviorTemplate(
+      step.url || context.page.url(),
+      context.currentItem,
+    ).trim();
+    if (!url) {
+      return;
+    }
+
+    const timeout = this.getBehaviorStepTimeout(step, context.config, 60_000);
+    const waitUntil =
+      step.waitUntil === 'networkidle' ? 'networkidle' : 'domcontentloaded';
+
+    await this.applyConfiguredCookies(context.page, url, context.config);
+    await this.waitBeforeNavigation(context.page, context.config);
+    await context.page.goto(url, {
+      waitUntil,
+      timeout,
+    });
+    context.scope = undefined;
+  }
+
+  private async runBehaviorClickStep(
+    step: BehaviorStep,
+    context: BehaviorExecutionContext,
+  ): Promise<void> {
+    if (!step.selector?.trim()) {
+      return;
+    }
+
+    const timeout = this.getBehaviorStepTimeout(step, context.config);
+    const target = this.getBehaviorLocator(context, step.selector).first();
+    await target.waitFor({ state: 'visible', timeout });
+    await target.click({ timeout });
+  }
+
+  private async runBehaviorTypeStep(
+    step: BehaviorStep,
+    context: BehaviorExecutionContext,
+  ): Promise<void> {
+    if (!step.selector?.trim()) {
+      return;
+    }
+
+    const timeout = this.getBehaviorStepTimeout(step, context.config);
+    const value = this.resolveBehaviorTemplate(step.value, context.currentItem);
+    const target = this.getBehaviorLocator(context, step.selector).first();
+    await target.waitFor({ state: 'visible', timeout });
+    await target.fill(value, { timeout });
+  }
+
+  private async runBehaviorWaitStep(
+    step: BehaviorStep,
+    context: BehaviorExecutionContext,
+  ): Promise<void> {
+    const timeout = this.getBehaviorStepTimeout(step, context.config);
+
+    if (step.waitUntil === 'timeout' || (!step.selector && !step.waitUntil)) {
+      await context.page.waitForTimeout(timeout || 1000);
+      return;
+    }
+
+    if (step.waitUntil === 'networkidle') {
+      await context.page.waitForLoadState('networkidle', { timeout });
+      return;
+    }
+
+    if (!step.selector?.trim()) {
+      await context.page.waitForTimeout(timeout || 1000);
+      return;
+    }
+
+    const target = this.getBehaviorLocator(context, step.selector).first();
+    await target.waitFor({
+      state:
+        step.waitUntil === 'attached' || step.waitUntil === 'hidden'
+          ? step.waitUntil
+          : 'visible',
+      timeout,
+    });
+  }
+
+  private async runBehaviorExtractStep(
+    step: BehaviorStep,
+    context: BehaviorExecutionContext,
+  ): Promise<void> {
+    const field = String(step.field || '').trim();
+    if (!field) {
+      return;
+    }
+
+    const item = this.ensureBehaviorCurrentItem(context);
+    item[field] = await this.extractBehaviorStepValue(step, context);
+  }
+
+  private async extractBehaviorStepValue(
+    step: BehaviorStep,
+    context: BehaviorExecutionContext,
+  ): Promise<any> {
+    const locator = this.getBehaviorDefaultLocator(context, step.selector);
+    const count = Math.min(await locator.count(), 50);
+    const values: unknown[] = [];
+
+    for (let index = 0; index < count; index++) {
+      const value = await this.extractBehaviorValueFromLocator(
+        locator.nth(index),
+        step.extractType || 'text',
+        step.attribute,
+      );
+      if (this.hasMeaningfulValue(value)) {
+        values.push(value);
+      }
+    }
+
+    if (values.length === 0) {
+      return null;
+    }
+
+    if (values.length === 1) {
+      return values[0];
+    }
+
+    return values;
+  }
+
+  private async extractBehaviorValueFromLocator(
+    locator: any,
+    extractType: BehaviorExtractType,
+    attribute?: string,
+  ): Promise<any> {
+    if (extractType === 'text') {
+      return locator.evaluate((el: HTMLElement) => el.innerText?.trim() || '');
+    }
+
+    if (extractType === 'html') {
+      const html = await locator.evaluate((el: HTMLElement) => el.innerHTML || '');
+      return formatHtmlFragment(html);
+    }
+
+    if (extractType === 'markdown') {
+      const html = await locator.evaluate((el: HTMLElement) => el.innerHTML || '');
+      return CrawleeEngineService.convertHtmlToMarkdown(
+        formatHtmlFragment(html),
+      );
+    }
+
+    if (extractType === 'link') {
+      return locator.evaluate((el: Element) =>
+        el.getAttribute('href') || (el as HTMLAnchorElement).href || '',
+      );
+    }
+
+    if (extractType === 'image') {
+      return locator.evaluate((el: Element) => {
+        const image = el as HTMLImageElement;
+        return (
+          image.currentSrc ||
+          image.src ||
+          el.getAttribute('src') ||
+          el.getAttribute('data-src') ||
+          ''
+        );
+      });
+    }
+
+    return locator.evaluate(
+      (el: Element, attr: string | undefined) =>
+        (attr ? el.getAttribute(attr) : null) ?? '',
+      attribute,
+    );
+  }
+
+  private async runBehaviorScrollStep(
+    step: BehaviorStep,
+    context: BehaviorExecutionContext,
+  ): Promise<void> {
+    const loops = Math.max(1, step.maxLoops || 1);
+    const distance = Number(step.value) || 1000;
+    const waitMs = Math.max(0, step.waitAfter || 400);
+
+    if (step.selector?.trim()) {
+      const target = this.getBehaviorLocator(context, step.selector).first();
+      for (let index = 0; index < loops; index++) {
+        await target.evaluate(
+          (el: Element, amount: number) => {
+            const scrollable = el as HTMLElement;
+            scrollable.scrollTop += amount;
+          },
+          distance,
+        );
+        if (waitMs > 0) {
+          await context.page.waitForTimeout(waitMs);
+        }
+      }
+      return;
+    }
+
+    for (let index = 0; index < loops; index++) {
+      await context.page.mouse.wheel(0, distance);
+      if (waitMs > 0) {
+        await context.page.waitForTimeout(waitMs);
+      }
+    }
+  }
+
+  private async runBehaviorLoopStep(
+    step: BehaviorStep,
+    context: BehaviorExecutionContext,
+  ): Promise<void> {
+    if (!step.children?.length) {
+      return;
+    }
+
+    const collected: Record<string, any>[] = [];
+
+    if (step.loopMode === 'times') {
+      const iterations = Math.max(1, step.maxLoops || 1);
+      for (let index = 0; index < iterations; index++) {
+        const childContext: BehaviorExecutionContext = {
+          page: context.page,
+          scope: context.scope,
+          currentItem: undefined,
+          results: [],
+          config: context.config,
+        };
+        await this.executeBehaviorStepList(step.children, childContext);
+        collected.push(...this.collectBehaviorContextResults(childContext));
+      }
+    } else {
+      if (!step.selector?.trim()) {
+        return;
+      }
+
+      const baseLocator = this.getBehaviorLocator(context, step.selector);
+      const total = await baseLocator.count();
+      const limit = step.maxLoops ? Math.min(total, step.maxLoops) : total;
+
+      for (let index = 0; index < limit; index++) {
+        const childContext: BehaviorExecutionContext = {
+          page: context.page,
+          scope: baseLocator.nth(index),
+          currentItem: undefined,
+          results: [],
+          config: context.config,
+        };
+        await this.executeBehaviorStepList(step.children, childContext);
+        collected.push(...this.collectBehaviorContextResults(childContext));
+      }
+    }
+
+    if (step.outputKey?.trim() && context.currentItem) {
+      context.currentItem[step.outputKey.trim()] = collected;
+      return;
+    }
+
+    context.results.push(...collected);
+  }
+
+  private async runBehaviorConditionStep(
+    step: BehaviorStep,
+    context: BehaviorExecutionContext,
+  ): Promise<void> {
+    const passed = await this.evaluateBehaviorCondition(step, context);
+    await this.executeBehaviorStepList(
+      passed ? step.children || [] : step.elseChildren || [],
+      context,
+    );
+  }
+
+  private async evaluateBehaviorCondition(
+    step: BehaviorStep,
+    context: BehaviorExecutionContext,
+  ): Promise<boolean> {
+    if (step.conditionType === 'customJS') {
+      return Boolean(await this.executeBehaviorCustomCode(step.code, context));
+    }
+
+    const locator = step.selector?.trim()
+      ? this.getBehaviorLocator(context, step.selector)
+      : this.getBehaviorDefaultLocator(context);
+
+    if (step.conditionType === 'not_exists') {
+      return (await locator.count()) === 0;
+    }
+
+    if (step.conditionType === 'text_contains') {
+      const actualText = String(
+        await this.extractBehaviorValueFromLocator(locator.first(), 'text'),
+      ).toLowerCase();
+      const expectedText = this.resolveBehaviorTemplate(
+        step.conditionValue,
+        context.currentItem,
+      ).toLowerCase();
+      return actualText.includes(expectedText);
+    }
+
+    return (await locator.count()) > 0;
+  }
+
+  private async runBehaviorCustomJSStep(
+    step: BehaviorStep,
+    context: BehaviorExecutionContext,
+  ): Promise<void> {
+    const result = await this.executeBehaviorCustomCode(step.code, context);
+
+    if (Array.isArray(result)) {
+      for (const item of result) {
+        if (item && typeof item === 'object') {
+          context.results.push(item as Record<string, any>);
+        }
+      }
+      return;
+    }
+
+    if (!result || typeof result !== 'object') {
+      return;
+    }
+
+    if (context.currentItem) {
+      Object.assign(this.ensureBehaviorCurrentItem(context), result);
+      return;
+    }
+
+    context.results.push(result as Record<string, any>);
+  }
+
+  private async executeBehaviorCustomCode(
+    code: string | undefined,
+    context: BehaviorExecutionContext,
+  ): Promise<any> {
+    const source = String(code ?? '').trim();
+    if (!source) {
+      return undefined;
+    }
+
+    if (!isUnsafeCustomJsEnabled()) {
+      throw new Error('Behavior custom JavaScript is disabled by server policy');
+    }
+
+    const helpers = {
+      wait: async (ms: number) => context.page.waitForTimeout(Math.max(0, ms || 0)),
+      locator: (selector: string) => this.getBehaviorLocator(context, selector),
+      readText: async (selector?: string) =>
+        this.extractBehaviorStepValue(
+          { type: 'extract', extractType: 'text', selector },
+          context,
+        ),
+      extract: async (
+        selector: string | undefined,
+        extractType: BehaviorExtractType = 'text',
+        attribute?: string,
+      ) =>
+        this.extractBehaviorStepValue(
+          { type: 'extract', selector, extractType, attribute },
+          context,
+        ),
+      push: (item: Record<string, any>) => {
+        if (item && typeof item === 'object') {
+          context.results.push(item);
+        }
+      },
+      resolve: (template: string) =>
+        this.resolveBehaviorTemplate(template, context.currentItem),
+    };
+
+    const runner = new Function(
+      'page',
+      'scope',
+      'item',
+      'results',
+      'helpers',
+      `"use strict"; return (async () => { ${source} })();`,
+    );
+
+    return runner(
+      context.page,
+      context.scope,
+      context.currentItem,
+      context.results,
+      helpers,
+    );
+  }
+
   private toPlaywrightSelector(
-    selectorType: PreActionConfig['selectorType'],
     selector: string,
   ): string {
-    if (selectorType === 'xpath') {
-      if (selector.startsWith('xpath=')) return selector;
-      return `xpath=${selector.startsWith('.//') ? selector.substring(1) : selector}`;
+    const normalized = selector.trim();
+    if (
+      normalized.startsWith('xpath=') ||
+      normalized.startsWith('//') ||
+      normalized.startsWith('.//') ||
+      normalized.startsWith('./')
+    ) {
+      return normalized.startsWith('xpath=')
+        ? normalized
+        : `xpath=${normalized.startsWith('.') ? normalized.substring(1) : normalized}`;
     }
-    return selector;
+    return normalized;
+  }
+
+  private shouldIgnorePreActionError(
+    error: unknown,
+    ignoreMissingTargets?: boolean,
+  ): boolean {
+    if (!ignoreMissingTargets) {
+      return false;
+    }
+
+    const message =
+      error instanceof Error ? error.message : String(error || '');
+
+    return (
+      /locator\.waitFor: Timeout/i.test(message) ||
+      /locator\.click: Timeout/i.test(message) ||
+      /waiting for locator/i.test(message) ||
+      /element is not attached to the dom/i.test(message) ||
+      /element is not visible/i.test(message)
+    );
   }
 
   private async executePreActions(
     page: any,
     actions: PreActionConfig[],
     defaultTimeout: number,
+    options?: {
+      ignoreMissingTargets?: boolean;
+    },
   ): Promise<void> {
     for (const action of actions) {
       const timeout = action.timeout ?? defaultTimeout;
@@ -1758,38 +2860,217 @@ export class CrawleeEngineService {
       }
 
       if (!action.selector) {
-        this.logger.warn(`鍓嶇疆鍔ㄤ綔 ${action.type} 缂哄皯 selector锛屽凡璺宠繃`);
+        this.logger.warn(`Pre-action ${action.type} is missing a selector and was skipped`);
         continue;
       }
 
-      const finalSelector = this.toPlaywrightSelector(
-        action.selectorType,
-        action.selector,
-      );
+      const finalSelector = this.toPlaywrightSelector(action.selector);
+      try {
+        if (action.type === 'click') {
+          const target = page.locator(finalSelector).first();
+          await target.waitFor({ state: 'visible', timeout });
+          await target.click({ timeout });
+          await this.waitForPageSettled(page, timeout, 300);
+          continue;
+        }
 
-      if (action.type === 'click') {
-        const target = page.locator(finalSelector).first();
-        await target.waitFor({ state: 'visible', timeout });
-        await target.click({ timeout });
-        continue;
+        if (action.type === 'type') {
+          const target = page.locator(finalSelector).first();
+          await target.waitFor({ state: 'visible', timeout });
+          await target.fill(String(action.value ?? ''), { timeout });
+          await this.waitForPageSettled(page, timeout, 200);
+          continue;
+        }
+
+        if (action.type === 'wait_for_selector') {
+          await page
+            .locator(finalSelector)
+            .first()
+            .waitFor({ state: 'visible', timeout });
+          continue;
+        }
+
+        this.logger.warn(`Unsupported pre-action type: ${action.type}`);
+      } catch (error) {
+        if (this.shouldIgnorePreActionError(error, options?.ignoreMissingTargets)) {
+          this.logger.warn(
+            `Optional pre-action ${action.type} skipped for selector ${action.selector}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          continue;
+        }
+
+        throw error;
       }
-
-      if (action.type === 'wait_for_selector') {
-        await page
-          .locator(finalSelector)
-          .first()
-          .waitFor({ state: 'visible', timeout });
-        continue;
-      }
-
-      this.logger.warn(`涓嶆敮鎸佺殑鍓嶇疆鍔ㄤ綔绫诲瀷: ${action.type}`);
     }
   }
 
   private getLocatorFromSelector(page: any, selector: string): any {
-    if (selector.startsWith('//')) return page.locator(`xpath=${selector}`);
-    if (selector.startsWith('.//')) return page.locator(`xpath=${selector.substring(1)}`);
+    if (this.isXPathSelector(selector)) {
+      return page.locator(`xpath=${this.toPageLevelXPath(selector)}`);
+    }
     return page.locator(selector);
+  }
+
+  private async getElementSignature(locator: any): Promise<string | null> {
+    return locator
+      .evaluate((element: Element) => {
+        const target = element as HTMLElement;
+        return [
+          target.getAttribute('href') || '',
+          target.getAttribute('src') || '',
+          target.textContent || '',
+          target.outerHTML || '',
+        ].join('||');
+      })
+      .catch(() => null);
+  }
+
+  private setExtractedFieldValue(
+    itemData: Record<string, any>,
+    selectorConfig: SelectorConfig,
+    value: unknown,
+  ) {
+    itemData[selectorConfig.name] = value;
+  }
+
+  private getParentLinkValue(
+    itemData: Record<string, any>,
+    parentLink?: string,
+  ): string | null {
+    const namedValue = itemData[parentLink || ''];
+    return typeof namedValue === 'string' && namedValue.trim()
+      ? namedValue
+      : null;
+  }
+
+  private assertUniqueSelectorNames(config: CrawleeTaskConfig): void {
+    const counts = new Map<string, number>();
+    const register = (value: unknown) => {
+      const name = String(value ?? '').trim();
+      if (!name) {
+        return;
+      }
+
+      counts.set(name, (counts.get(name) || 0) + 1);
+    };
+
+    for (const selector of config.selectors || []) {
+      register(selector?.name);
+    }
+
+    for (const context of config.nestedContexts || []) {
+      for (const selector of context?.selectors || []) {
+        register(selector?.name);
+      }
+    }
+
+    const duplicates = [...counts.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([name]) => name);
+
+    if (duplicates.length > 0) {
+      throw new Error(`字段名不能重复: ${duplicates.join(', ')}`);
+    }
+  }
+
+  private async resolveNextPageLocator(
+    page: any,
+    selector: string,
+  ): Promise<{ locator: any; matchCount: number } | null> {
+    const locator = this.getLocatorFromSelector(page, selector);
+    const matchCount = await locator.count();
+    if (matchCount === 0) {
+      return null;
+    }
+
+    const inspectFrom = Math.max(0, matchCount - 120);
+    const currentUrl = page.url();
+    const rankedCandidates: Array<{ index: number; score: number; top: number }> = [];
+
+    for (let index = inspectFrom; index < matchCount; index++) {
+      const candidate = locator.nth(index);
+      const metadata = await candidate
+        .evaluate((element: Element) => {
+          const target = element as HTMLElement;
+          const style = window.getComputedStyle(target);
+          const rect = target.getBoundingClientRect();
+          const text = (target.innerText || target.textContent || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+          const ariaLabel = target.getAttribute('aria-label') || '';
+          const title = target.getAttribute('title') || '';
+          const rel = target.getAttribute('rel') || '';
+          const className = target.getAttribute('class') || '';
+          const descriptor = [text, ariaLabel, title, rel, className]
+            .join(' ')
+            .toLowerCase();
+          const disabled =
+            target.getAttribute('disabled') !== null ||
+            target.getAttribute('aria-disabled') === 'true' ||
+            target.classList.contains('disabled') ||
+            target.getAttribute('aria-current') === 'page';
+          const visible =
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.visibility !== 'hidden' &&
+            style.display !== 'none';
+
+          return {
+            disabled,
+            visible,
+            descriptor,
+            href: target.getAttribute('href') || '',
+            inNavigation: Boolean(
+              target.closest(
+                'nav,[role="navigation"],[aria-label*="pagination"],[class*="pagination"],[class*="pager"]',
+              ),
+            ),
+            top: rect.top,
+          };
+        })
+        .catch(() => null);
+
+      if (!metadata?.visible || metadata.disabled) {
+        continue;
+      }
+
+      let score = 0;
+      if (metadata.inNavigation) {
+        score += 50;
+      }
+      if (
+        /(?:\bnext\b|next\s*page|下一页|下页|下一個|下一个|后一页|後一頁|更多|load\s*more|more|›|»|→)/i.test(
+          metadata.descriptor,
+        )
+      ) {
+        score += 120;
+      }
+      if (metadata.href && metadata.href !== currentUrl) {
+        score += 10;
+      }
+
+      rankedCandidates.push({
+        index,
+        score,
+        top: Number(metadata.top || 0),
+      });
+    }
+
+    if (rankedCandidates.length === 0) {
+      return null;
+    }
+
+    rankedCandidates.sort(
+      (left, right) =>
+        right.score - left.score || right.top - left.top || right.index - left.index,
+    );
+
+    return {
+      locator: locator.nth(rankedCandidates[0].index),
+      matchCount,
+    };
   }
 
   private async extractItemsByBaseSelector(
@@ -1820,7 +3101,9 @@ export class CrawleeEngineService {
           await this.extractDataFromElement(baseElement, selector, itemData, page);
         }
       }
-      items.push(itemData);
+      if (this.hasMeaningfulItemData(itemData)) {
+        items.push(itemData);
+      }
     }
 
     return items;
@@ -1836,6 +3119,363 @@ export class CrawleeEngineService {
     }
   }
 
+  private async advanceToNextPage(
+    page: any,
+    selector: string | undefined,
+    timeout: number,
+    contentReadySelector?: string,
+  ): Promise<boolean> {
+    const normalizedSelector = String(selector || '').trim();
+    if (!normalizedSelector) {
+      return false;
+    }
+
+    try {
+      const candidate = await this.resolveNextPageLocator(page, normalizedSelector);
+      if (!candidate) {
+        return false;
+      }
+      const locator = candidate.locator;
+      const changeTimeout = Math.max(1500, Math.min(timeout, 12000));
+
+      await locator.scrollIntoViewIfNeeded().catch(() => undefined);
+      await locator.waitFor({ state: 'visible', timeout });
+      const previousUrl = page.url();
+      let previousFirstItemSignature: string | null = null;
+
+      if (contentReadySelector) {
+        const contentLocator = this.getLocatorFromSelector(page, contentReadySelector).first();
+        previousFirstItemSignature = await this.getElementSignature(contentLocator);
+      }
+
+      await locator.click({ timeout });
+
+      const urlChangedByWaiter = await page
+        .waitForFunction(
+          (previous: string) => window.location.href !== previous,
+          previousUrl,
+          { timeout: changeTimeout },
+        )
+        .then(() => true)
+        .catch(() => false);
+
+      let contentChangedByWaiter = false;
+      if (contentReadySelector && previousFirstItemSignature) {
+        contentChangedByWaiter = await page
+          .waitForFunction(
+            ({ selector: readySelector, previousSignature }) => {
+              const locateElement = (input: string): Element | null => {
+                if (input.startsWith('//')) {
+                  return document.evaluate(
+                    input,
+                    document,
+                    null,
+                    XPathResult.FIRST_ORDERED_NODE_TYPE,
+                    null,
+                  ).singleNodeValue as Element | null;
+                }
+                if (input.startsWith('.//') || input.startsWith('./')) {
+                  return document.evaluate(
+                    input.substring(1),
+                    document,
+                    null,
+                    XPathResult.FIRST_ORDERED_NODE_TYPE,
+                    null,
+                  ).singleNodeValue as Element | null;
+                }
+                return document.querySelector(input);
+              };
+
+              const element = locateElement(readySelector);
+              if (!element) {
+                return false;
+              }
+
+              const target = element as HTMLElement;
+              const currentSignature = [
+                target.getAttribute('href') || '',
+                target.getAttribute('src') || '',
+                target.textContent || '',
+                target.outerHTML || '',
+              ].join('||');
+              return currentSignature !== previousSignature;
+            },
+            {
+              selector: contentReadySelector,
+              previousSignature: previousFirstItemSignature,
+            },
+            { timeout: changeTimeout },
+          )
+          .then(() => true)
+          .catch(() => false);
+      }
+
+      await this.waitForPageSettled(
+        page,
+        Math.min(timeout, 10000),
+        candidate.matchCount > 1 ? 500 : 300,
+      );
+
+      const currentUrl = page.url();
+      const urlChanged = urlChangedByWaiter || !this.isSameUrl(previousUrl, currentUrl);
+
+      let contentChanged = contentChangedByWaiter;
+      if (!contentChanged && contentReadySelector && previousFirstItemSignature) {
+        const currentSignature = await this.getElementSignature(
+          this.getLocatorFromSelector(page, contentReadySelector).first(),
+        );
+        contentChanged = Boolean(
+          currentSignature && currentSignature !== previousFirstItemSignature,
+        );
+      }
+
+      if (!urlChanged && !contentChanged) {
+        this.logger.debug(
+          `Next-page selector ${normalizedSelector} did not change the page state`,
+        );
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      this.logger.debug(
+        `Failed to advance by next selector ${normalizedSelector}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return false;
+    }
+  }
+
+  private getNestedOutputKey(ctx: NestedExtractContext): string {
+    const configured = String(ctx.listOutputKey || '').trim();
+    if (configured) {
+      return configured;
+    }
+
+    const parentLink = String(ctx.parentLink || '').trim().replace(/\s+/g, '_');
+    return parentLink ? `${parentLink}_items` : 'items';
+  }
+
+  private async extractConfiguredListItemsFromCurrentPage(
+    page: any,
+    config: CrawleeTaskConfig,
+  ): Promise<Record<string, any>[]> {
+    await this.waitForReadySelector(
+      page,
+      config.baseSelector,
+      config.waitForTimeout || config.navigationTimeout || 30000,
+      'attached',
+    );
+    await this.waitForPageSettled(
+      page,
+      config.waitForTimeout || config.navigationTimeout || 30000,
+      200,
+    );
+
+    let baseElements;
+    if (this.isXPathSelector(config.baseSelector)) {
+      const xpathSelector = this.toPageLevelXPath(config.baseSelector || '');
+      baseElements = page.locator(`xpath=${xpathSelector}`);
+      this.logger.log(`使用 XPath 基础选择器: ${xpathSelector}`);
+    } else {
+      baseElements = page.locator(config.baseSelector || '');
+      this.logger.log(`使用 CSS 基础选择器: ${config.baseSelector}`);
+    }
+
+    const itemCount = await baseElements.count();
+    this.logger.log(`基础项总数: ${itemCount}, 提取上限: ${config.maxItems ?? itemCount}`);
+
+    const maxExtract = config.maxItems ? Math.min(itemCount, config.maxItems) : itemCount;
+    const listItemsData: Record<string, any>[] = [];
+
+    for (let i = 0; i < maxExtract; i++) {
+      const itemData: Record<string, any> = {};
+      const baseElement = baseElements.nth(i);
+      const elementExists = (await baseElement.count()) > 0;
+
+      if (!elementExists) {
+        this.logger.warn(`第 ${i + 1} 个基础元素不存在，已跳过`);
+        continue;
+      }
+
+      const directSelectors = (config.selectors || []).filter(
+        (selector) => !selector.parentLink,
+      );
+      for (const selectorConfig of directSelectors) {
+        await this.extractDataFromElementWithRetries(
+          baseElement,
+          selectorConfig,
+          itemData,
+          page,
+          config,
+        );
+      }
+
+      if (this.hasMeaningfulItemData(itemData)) {
+        listItemsData.push(itemData);
+      }
+    }
+
+    return listItemsData;
+  }
+
+  private async enrichCollectedItemsWithDetailData(
+    items: Record<string, any>[],
+    config: CrawleeTaskConfig,
+    totalRequests: number,
+  ): Promise<void> {
+    if (items.length === 0) {
+      return;
+    }
+
+    const childSelectors = (config.selectors || []).filter(
+      (selector) => selector.parentLink,
+    );
+    if (childSelectors.length > 0) {
+      const detailItemConcurrency = this.getDetailItemConcurrency(
+        config,
+        items.length,
+        totalRequests,
+      );
+      const childSelectorsByLinkField = new Map<
+        string,
+        {
+          parentLink?: string;
+          selectors: SelectorConfig[];
+        }
+      >();
+
+      for (const selectorConfig of childSelectors) {
+        const parentLink = String(selectorConfig.parentLink || '').trim() || undefined;
+        if (!parentLink) continue;
+
+        const existingGroup = childSelectorsByLinkField.get(parentLink);
+        if (existingGroup) {
+          existingGroup.selectors.push(selectorConfig);
+          continue;
+        }
+
+        childSelectorsByLinkField.set(parentLink, {
+          parentLink,
+          selectors: [selectorConfig],
+        });
+      }
+
+      await this.mapWithConcurrencyLimit(
+        items,
+        detailItemConcurrency,
+        async (itemData) => {
+          for (const group of childSelectorsByLinkField.values()) {
+            const linkUrl = this.getParentLinkValue(
+              itemData,
+              group.parentLink,
+            );
+            if (linkUrl && typeof linkUrl === 'string') {
+              try {
+                await this.extractParentFieldsFromDetailPage(
+                  linkUrl,
+                  group.selectors,
+                  itemData,
+                  config,
+                );
+              } catch (error) {
+                this.logger.error(
+                  `Failed to extract detail fields for parentLink=${
+                    group.parentLink || 'unknown'
+                  }:`,
+                  error instanceof Error ? error.stack : String(error),
+                );
+                for (const selectorConfig of group.selectors) {
+                  this.setExtractedFieldValue(itemData, selectorConfig, null);
+                }
+              }
+            } else {
+              for (const selectorConfig of group.selectors) {
+                this.setExtractedFieldValue(itemData, selectorConfig, null);
+              }
+            }
+          }
+        },
+      );
+    }
+
+    if (config.nestedContexts?.length) {
+      await this.extractNestedContextsForItems(
+        items,
+        config.nestedContexts,
+        config,
+        1,
+      );
+    }
+  }
+
+  private async extractConfiguredListItems(
+    page: any,
+    config: CrawleeTaskConfig,
+    totalRequests: number,
+  ): Promise<Record<string, any>[]> {
+    const collectedItems: Record<string, any>[] = [];
+    const maxPages = Math.max(1, config.maxPages || 1);
+
+    for (let pageIndex = 1; pageIndex <= maxPages; pageIndex++) {
+      if (config.scrollEnabled) {
+        await page.evaluate(
+          async ({ scrollDistance, scrollDelay, maxScrollDistance }) => {
+            let scrolled = 0;
+            while (scrolled < maxScrollDistance) {
+              window.scrollBy(0, scrollDistance);
+              scrolled += scrollDistance;
+              await new Promise((resolve) => setTimeout(resolve, scrollDelay));
+            }
+          },
+          {
+            scrollDistance: config.scrollDistance || 1000,
+            scrollDelay: config.scrollDelay || 1000,
+            maxScrollDistance: config.maxScrollDistance || 10000,
+          },
+        );
+        await page.waitForTimeout(1000);
+      }
+
+      const currentPageItems = await this.extractConfiguredListItemsFromCurrentPage(
+        page,
+        config,
+      );
+      collectedItems.push(...currentPageItems);
+
+      if (config.maxItems && collectedItems.length >= config.maxItems) {
+        break;
+      }
+
+      if (!config.nextPageSelector || pageIndex >= maxPages) {
+        break;
+      }
+
+      const moved = await this.advanceToNextPage(
+        page,
+        config.nextPageSelector,
+        config.waitForTimeout || 30000,
+        config.baseSelector,
+      );
+      if (!moved) {
+        break;
+      }
+    }
+
+    const finalItems = config.maxItems
+      ? collectedItems.slice(0, config.maxItems)
+      : collectedItems;
+
+    await this.enrichCollectedItemsWithDetailData(
+      finalItems,
+      config,
+      totalRequests,
+    );
+
+    return finalItems;
+  }
+
   private async extractNestedContextItems(
     detailUrl: string,
     ctx: NestedExtractContext,
@@ -1843,33 +3483,162 @@ export class CrawleeEngineService {
   ): Promise<Record<string, any>[]> {
     const detailPage = await this.createDetachedDetailPage(config);
     try {
+      await this.applyConfiguredCookies(detailPage, detailUrl, config);
+      await this.waitBeforeNavigation(detailPage, config);
       await detailPage.goto(detailUrl, {
         waitUntil: 'domcontentloaded',
         timeout: config.navigationTimeout || 60000,
       });
-      await detailPage.waitForTimeout(800);
+      await this.waitForPageSettled(
+        detailPage,
+        config.waitForTimeout || config.navigationTimeout || 30000,
+      );
 
       if (ctx.preActions?.length) {
         await this.executePreActions(
           detailPage,
           ctx.preActions,
           config.waitForTimeout || 30000,
+          {
+            ignoreMissingTargets: true,
+          },
+        );
+        await this.waitForPageSettled(
+          detailPage,
+          config.waitForTimeout || config.navigationTimeout || 30000,
         );
       }
 
-      await this.maybeScrollForNested(detailPage, ctx);
+      const collectedItems: Record<string, any>[] = [];
+      const nestedMaxPages = Math.max(1, ctx.next?.maxPages || 1);
 
-      // 褰撳墠瀹炵幇鍏堟姄鍙栫涓€椤碉紱next 閰嶇疆鍙户缁墿灞曞埌缈婚〉绱Н
-      const items = await this.extractItemsByBaseSelector(
-        detailPage,
-        ctx.baseSelector,
-        ctx.selectors,
-        ctx.scroll?.maxItems || config.maxItems,
-        config,
-      );
-      return items;
+      for (let pageIndex = 1; pageIndex <= nestedMaxPages; pageIndex++) {
+        await this.maybeScrollForNested(detailPage, ctx);
+        await this.waitForReadySelector(
+          detailPage,
+          ctx.baseSelector,
+          config.waitForTimeout || config.navigationTimeout || 30000,
+          'attached',
+        );
+        await this.waitForPageSettled(
+          detailPage,
+          config.waitForTimeout || config.navigationTimeout || 30000,
+          200,
+        );
+
+        const items = await this.extractItemsByBaseSelector(
+          detailPage,
+          ctx.baseSelector,
+          ctx.selectors,
+          ctx.scroll?.maxItems,
+          config,
+        );
+        collectedItems.push(...items);
+
+        if (!ctx.next?.selector || pageIndex >= nestedMaxPages) {
+          break;
+        }
+
+        const moved = await this.advanceToNextPage(
+          detailPage,
+          ctx.next.selector,
+          config.waitForTimeout || 30000,
+          ctx.baseSelector,
+        );
+        if (!moved) {
+          break;
+        }
+      }
+
+      return collectedItems;
     } finally {
       await detailPage.context().close().catch(() => undefined);
+    }
+  }
+
+  private async captureTaskScreenshotFallback(
+    taskId: number,
+    executionId: number,
+    config: CrawleeTaskConfig,
+    targetUrl: string,
+  ): Promise<{ filePath: string; relativePath: string } | null> {
+    if (!targetUrl) {
+      return null;
+    }
+
+    const page = await this.createDetachedDetailPage(config);
+    try {
+      await this.applyConfiguredCookies(page, targetUrl, config);
+      await this.waitBeforeNavigation(page, config);
+      await page.goto(targetUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: config.navigationTimeout || 60000,
+      });
+      await this.waitForPageSettled(
+        page,
+        config.waitForTimeout || config.navigationTimeout || 30000,
+      );
+
+      if (config.preActions?.length) {
+        await this.executePreActions(
+          page,
+          config.preActions,
+          config.waitForTimeout || 30000,
+        );
+        await this.waitForPageSettled(
+          page,
+          config.waitForTimeout || config.navigationTimeout || 30000,
+        );
+      }
+
+      if (config.waitForSelector) {
+        await page
+          .waitForSelector(config.waitForSelector, {
+            timeout: config.waitForTimeout || 30000,
+          })
+          .catch(() => undefined);
+      }
+
+      if (config.scrollEnabled) {
+        await page.evaluate(
+          async ({ scrollDistance, scrollDelay, maxScrollDistance }) => {
+            let scrolled = 0;
+            while (scrolled < maxScrollDistance) {
+              window.scrollBy(0, scrollDistance);
+              scrolled += scrollDistance;
+              await new Promise((resolve) => setTimeout(resolve, scrollDelay));
+            }
+          },
+          {
+            scrollDistance: config.scrollDistance || 1000,
+            scrollDelay: config.scrollDelay || 1000,
+            maxScrollDistance: config.maxScrollDistance || 10000,
+          },
+        );
+      }
+
+      await this.waitForPageSettled(page, config.waitForTimeout || 5000, 800);
+
+      const screenshotBuffer = await page.screenshot(
+        this.getStoredTaskScreenshotOptions(),
+      );
+      const screenshotPaths = this.getScreenshotStoragePaths(taskId, executionId);
+      await fs.mkdir(screenshotPaths.absoluteDir, { recursive: true });
+      await fs.writeFile(screenshotPaths.absoluteFilePath, screenshotBuffer);
+
+      return {
+        filePath: screenshotPaths.absoluteFilePath,
+        relativePath: screenshotPaths.relativePath,
+      };
+    } catch (error) {
+      this.logger.warn(
+        `Fallback screenshot capture failed for task ${taskId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return null;
+    } finally {
+      await page.context().close().catch(() => undefined);
     }
   }
 
@@ -1884,7 +3653,10 @@ export class CrawleeEngineService {
         const maxDepth = ctx.maxDepth ?? 5;
         if (depth > maxDepth) continue;
 
-        const parentLinkValue = item[ctx.parentLink];
+        const parentLinkValue = this.getParentLinkValue(
+          item,
+          ctx.parentLink,
+        );
         if (!parentLinkValue || typeof parentLinkValue !== 'string') continue;
 
         try {
@@ -1893,7 +3665,7 @@ export class CrawleeEngineService {
             ctx,
             config,
           );
-          const outputKey = ctx.listOutputKey || 'items';
+          const outputKey = this.getNestedOutputKey(ctx);
           item[outputKey] = nestedItems;
 
           if (nestedItems.length > 0) {
@@ -1906,10 +3678,10 @@ export class CrawleeEngineService {
           }
         } catch (error) {
           this.logger.warn(
-            `宓屽鎻愬彇澶辫触 parentLink=${ctx.parentLink} url=${parentLinkValue}`,
+            `Nested extraction failed for parentLink=${ctx.parentLink} url=${parentLinkValue}`,
             error instanceof Error ? error.stack : String(error),
           );
-          const outputKey = ctx.listOutputKey || 'items';
+          const outputKey = this.getNestedOutputKey(ctx);
           if (!Array.isArray(item[outputKey])) {
             item[outputKey] = [];
           }
@@ -1919,8 +3691,7 @@ export class CrawleeEngineService {
   }
 
   /**
-   * 鏇存柊鎵ц鐘舵€?
-   */
+   * 鏇存柊鎵ц鐘舵€?   */
   private async updateExecutionStatus(
     executionId: number,
     status: string,
@@ -1933,12 +3704,73 @@ export class CrawleeEngineService {
         endTime: new Date(),
       });
     } catch (error) {
-      this.logger.error(`鏇存柊鎵ц鐘舵€佸け璐?${executionId}:`, error);
+      this.logger.error(`更新执行状态失败 ${executionId}:`, error);
     }
   }
 
+  private async persistTerminalExecutionStatus(
+    executionId: number,
+    status: 'success' | 'failed',
+    log: string,
+    resultPath?: string,
+  ): Promise<boolean> {
+    const completedAt = new Date();
+
+    try {
+      const execution = await this.executionRepository.findOne({
+        where: { id: executionId },
+      });
+
+      if (execution) {
+        execution.status = status;
+        execution.log = log;
+        execution.endTime = completedAt;
+        if (typeof resultPath !== 'undefined') {
+          execution.resultPath = resultPath;
+        }
+
+        await this.executionRepository.save(execution);
+      } else {
+        await this.executionRepository.update(executionId, {
+          status,
+          log,
+          endTime: completedAt,
+          ...(typeof resultPath !== 'undefined' ? { resultPath } : {}),
+        });
+      }
+
+      const persistedExecution = await this.executionRepository.findOne({
+        where: { id: executionId },
+      });
+
+      const statusMatches = persistedExecution?.status === status;
+      const resultPathMatches =
+        typeof resultPath === 'undefined' ||
+        persistedExecution?.resultPath === resultPath;
+
+      if (statusMatches && resultPathMatches) {
+        return true;
+      }
+
+      this.logger.warn(
+        `Execution ${executionId} terminal status verification mismatch. expectedStatus=${status}, actualStatus=${
+          persistedExecution?.status ?? 'missing'
+        }, expectedResultPath=${resultPath ?? 'unchanged'}, actualResultPath=${
+          persistedExecution?.resultPath ?? 'missing'
+        }`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to persist terminal execution status ${executionId}:`,
+        error,
+      );
+    }
+
+    return false;
+  }
+
   /**
-   * 鑾峰彇闃熷垪鐘舵€?
+   * 璇锋眰鍋滄浠诲姟
    */
   async requestTaskStop(
     taskId: number,
@@ -1968,9 +3800,27 @@ export class CrawleeEngineService {
 
     await this.updateExecutionStatus(
       activeTask.executionId,
-      'running',
+      'stopping',
       `${stopReason} (interrupting current run...)`,
     );
+
+    await this.taskRepository.update(taskId, {
+      status: 'stopping',
+      endTime: null as unknown as Date,
+    });
+
+    const taskInfo = await this.taskRepository.findOne({
+      where: { id: taskId },
+      select: ['id', 'name', 'url', 'userId'],
+    });
+
+    this.taskGateway.broadcastTaskUpdate({
+      taskId,
+      taskName: taskInfo?.name,
+      taskUrl: taskInfo?.url,
+      status: 'stopping',
+      progress: 95,
+    }, taskInfo?.userId);
 
     await Promise.allSettled([
       activeTask.crawler?.teardown() ?? Promise.resolve(),
@@ -1984,7 +3834,7 @@ export class CrawleeEngineService {
     let checking = false;
 
     return setInterval(async () => {
-      if (checking || activeTask.stopRequested) {
+      if (checking || activeTask.stopRequested || activeTask.terminalStatus) {
         return;
       }
 
@@ -2020,6 +3870,10 @@ export class CrawleeEngineService {
     return Boolean(this.activeTasks.get(taskId)?.stopRequested);
   }
 
+  private isTaskTerminal(taskId: number): boolean {
+    return Boolean(this.activeTasks.get(taskId)?.terminalStatus);
+  }
+
   private getTaskStopReason(taskId: number): string {
     return (
       this.activeTasks.get(taskId)?.stopReason ||
@@ -2039,7 +3893,7 @@ export class CrawleeEngineService {
     config: CrawleeTaskConfig,
     stopReason: string,
   ): Promise<void> {
-    await this.updateExecutionStatus(executionId, 'failed', stopReason);
+    await this.persistTerminalExecutionStatus(executionId, 'failed', stopReason);
     await this.taskRepository.update(taskId, {
       status: 'failed',
       endTime: new Date(),
@@ -2047,6 +3901,7 @@ export class CrawleeEngineService {
 
     const taskInfo = await this.taskRepository.findOne({
       where: { id: taskId },
+      select: ['id', 'name', 'url', 'userId'],
     });
 
     this.taskGateway.broadcastTaskUpdate({
@@ -2055,7 +3910,7 @@ export class CrawleeEngineService {
       taskUrl: taskInfo?.url,
       status: 'failed',
       progress: 0,
-    });
+    }, taskInfo?.userId);
 
     await this.sendTaskExecutionNotification({
       taskId,
@@ -2075,22 +3930,36 @@ export class CrawleeEngineService {
     itemCount?: number;
     previewItems?: Record<string, any>[];
   }): Promise<void> {
-    const notification = this.normalizeNotificationConfig(
-      options.config.notification,
-    );
-
-    if (!this.shouldSendNotification(notification, options.status)) {
-      return;
-    }
-
     try {
       const task = await this.taskRepository.findOne({
         where: { id: options.taskId },
         relations: ['user'],
       });
 
-      const recipient = task?.user?.email?.trim();
-      if (!task || !recipient) {
+      if (!task) {
+        return;
+      }
+
+      await this.notificationService.createTaskExecutionNotification({
+        userId: task.userId,
+        taskId: task.id,
+        taskName: task.name,
+        executionId: options.executionId,
+        status: options.status,
+        log: options.log,
+        itemCount: options.itemCount,
+      });
+
+      const notification = this.normalizeNotificationConfig(
+        options.config.notification,
+      );
+
+      if (!this.shouldSendNotification(notification, options.status)) {
+        return;
+      }
+
+      const recipient = task.user?.email?.trim();
+      if (!recipient) {
         return;
       }
 
@@ -2205,15 +4074,15 @@ export class CrawleeEngineService {
   }
 
   private buildNotificationContent(options: {
+    status: 'success' | 'failed' | 'stopped';
     taskName: string;
     taskUrl: string;
     executionId: number;
-    status: 'success' | 'failed';
     log: string;
     itemCount?: number;
     previewItems: Record<string, any>[];
   }): { text: string; html: string } {
-    const statusText = options.status === 'success' ? '成功' : '失败';
+    const statusText = options.status === 'success' ? '成功' : options.status === 'stopped' ? '已停止' : '失败';
     const summaryLines = [
       `任务名称: ${options.taskName}`,
       `任务状态: ${statusText}`,
@@ -2240,12 +4109,11 @@ export class CrawleeEngineService {
         ? `<h3>结果预览</h3>${options.previewItems
             .map(
               (item, index) =>
-                `<p><strong>#${index + 1}</strong></p><pre>${this.escapeHtml(
-                  this.stringifyPreviewItem(item),
-                )}</pre>`,
+                `<p><strong>#${index + 1}</strong></p><pre>${this.escapeHtml(this.stringifyPreviewItem(item))}</pre>`,
             )
             .join('')}`
         : '';
+
     const html = `
       <div>
         <h2>任务${this.escapeHtml(statusText)}通知</h2>
@@ -2253,11 +4121,7 @@ export class CrawleeEngineService {
         <p><strong>任务状态:</strong> ${this.escapeHtml(statusText)}</p>
         <p><strong>执行 ID:</strong> ${options.executionId}</p>
         <p><strong>任务地址:</strong> <a href="${this.escapeHtml(options.taskUrl)}">${this.escapeHtml(options.taskUrl)}</a></p>
-        ${
-          typeof options.itemCount === 'number'
-            ? `<p><strong>结果条数:</strong> ${options.itemCount}</p>`
-            : ''
-        }
+        ${typeof options.itemCount === 'number' ? `<p><strong>结果条数:</strong> ${options.itemCount}</p>` : ''}
         <p><strong>详情:</strong> ${this.escapeHtml(options.log)}</p>
         ${htmlPreview}
       </div>
@@ -2265,7 +4129,6 @@ export class CrawleeEngineService {
 
     return { text, html };
   }
-
   private stringifyPreviewItem(item: Record<string, any>): string {
     const text = JSON.stringify(item, null, 2) || '{}';
     return text.length > 4000 ? `${text.slice(0, 4000)}\n...` : text;
@@ -2281,18 +4144,26 @@ export class CrawleeEngineService {
   }
 
   getQueueStatus() {
+    const activeQueueItems = Array.from(this.activeTasks.values()).map((task) => ({
+      taskId: task.taskId,
+      executionId: task.executionId,
+      status: 'running' as const,
+    }));
+    const waitingQueueItems = this.taskQueue.map((task) => ({
+      taskId: task.taskId,
+      executionId: task.executionId,
+      status: 'queued' as const,
+    }));
+
     return {
-      queueLength: this.taskQueue.length,
-      isProcessing: this.isProcessing,
-      queuedTasks: this.taskQueue.map((task) => ({
-        taskId: task.taskId,
-        executionId: task.executionId,
-      })),
+      queueLength: activeQueueItems.length + waitingQueueItems.length,
+      isProcessing: this.isProcessing || activeQueueItems.length > 0,
+      queuedTasks: [...activeQueueItems, ...waitingQueueItems],
     };
   }
 
   /**
-   * 鍋滄寮曟搸
+   * 閸嬫粍顒涘鏇熸惛
    */
   async stop() {
     this.taskQueue = [];

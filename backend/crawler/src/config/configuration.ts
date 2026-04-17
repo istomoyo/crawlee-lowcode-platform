@@ -2,6 +2,13 @@
  * 应用配置
  * 从环境变量读取配置，提供默认值
  */
+import {
+  getAllowedCorsOrigins,
+  isUnsafeCustomJsEnabled,
+  resolveAuthCookieConfig,
+  resolveJwtSecret,
+} from './runtime-security';
+
 export default () => ({
   database: {
     host: process.env.DB_HOST || 'localhost',
@@ -16,7 +23,7 @@ export default () => ({
     password: process.env.REDIS_PASSWORD || undefined,
   },
   jwt: {
-    secret: process.env.JWT_SECRET || 'your-secret-key-change-in-production',
+    secret: resolveJwtSecret(),
     expiresIn: process.env.JWT_EXPIRES_IN ? parseInt(process.env.JWT_EXPIRES_IN, 10) : 86400,
   },
   server: {
@@ -24,10 +31,12 @@ export default () => ({
     nodeEnv: process.env.NODE_ENV || 'development',
   },
   cors: {
-    origins: process.env.ALLOWED_ORIGINS?.split(',') || [
-      'http://localhost:5173',
-      'http://localhost:3000',
-    ],
+    origins: getAllowedCorsOrigins(),
+  },
+  security: {
+    unsafeCustomJsEnabled: isUnsafeCustomJsEnabled(),
+    cookieVaultConfigured: Boolean(String(process.env.COOKIE_VAULT_SECRET ?? '').trim()),
+    authCookie: resolveAuthCookieConfig(),
   },
   throttle: {
     ttl: process.env.THROTTLE_TTL ? parseInt(process.env.THROTTLE_TTL, 10) : 60,

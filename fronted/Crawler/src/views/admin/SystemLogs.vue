@@ -1,210 +1,232 @@
 <template>
-  <div class="p-6">
-    <div class="flex justify-between items-center mb-6">
-      <h1 class="text-2xl font-bold text-gray-900">系统日志</h1>
-      <div class="flex gap-4">
-        <el-button type="primary" @click="exportLogs" :loading="exporting">
-          <el-icon><Download /></el-icon>
-          导出日志
-        </el-button>
-        <el-button type="danger" @click="clearLogs">
-          <el-icon><Delete /></el-icon>
-          清空日志
-        </el-button>
-      </div>
-    </div>
-
-    <div class="mb-4 flex gap-4 flex-wrap">
-      <el-select
-        v-model="levelFilter"
-        placeholder="日志级别"
-        clearable
-        style="width: 140px"
-        @change="handleFiltersChange"
-      >
-        <el-option label="全部" value="" />
-        <el-option label="ERROR" value="error" />
-        <el-option label="WARN" value="warn" />
-        <el-option label="INFO" value="info" />
-        <el-option label="DEBUG" value="debug" />
-      </el-select>
-
-      <el-input
-        v-model="searchQuery"
-        placeholder="搜索模块、用户或消息内容"
-        clearable
-        style="width: 280px"
-        @input="handleFiltersChange"
-      />
-
-      <el-date-picker
-        v-model="dateRange"
-        type="datetimerange"
-        range-separator="至"
-        start-placeholder="开始时间"
-        end-placeholder="结束时间"
-        format="YYYY-MM-DD HH:mm"
-        value-format="YYYY-MM-DD HH:mm"
-        @change="handleFiltersChange"
-      />
-
-      <el-button type="success" @click="refreshLogs">
-        <el-icon><Refresh /></el-icon>
-        刷新
-      </el-button>
-    </div>
-
-    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-      <div class="bg-white p-4 rounded-lg shadow-sm border">
-        <div class="flex items-center justify-between">
-          <div>
-            <p class="text-sm text-gray-600">日志总数</p>
-            <p class="text-2xl font-bold text-gray-900">{{ stats.total }}</p>
-          </div>
-          <el-icon size="32" class="text-gray-500">
-            <Document />
-          </el-icon>
-        </div>
+  <div class="page-shell">
+    <header class="page-header">
+      <div>
+        <h1 class="page-title">系统日志</h1>
+        <p class="page-description">
+          统一查看平台日志、导出审计记录，并在不同屏宽下保持清晰的信息层级。
+        </p>
       </div>
 
-      <div class="bg-white p-4 rounded-lg shadow-sm border">
-        <div class="flex items-center justify-between">
-          <div>
-            <p class="text-sm text-gray-600">错误日志</p>
-            <p class="text-2xl font-bold text-red-600">{{ stats.error }}</p>
-          </div>
-          <el-icon size="32" class="text-red-500">
-            <Warning />
-          </el-icon>
-        </div>
+      <div class="flex flex-wrap gap-2">
+        <el-button plain :loading="exporting" @click="exportLogs">导出日志</el-button>
+        <el-button type="danger" plain @click="clearLogs">清空日志</el-button>
       </div>
+    </header>
 
-      <div class="bg-white p-4 rounded-lg shadow-sm border">
-        <div class="flex items-center justify-between">
-          <div>
-            <p class="text-sm text-gray-600">警告日志</p>
-            <p class="text-2xl font-bold text-yellow-600">{{ stats.warn }}</p>
-          </div>
-          <el-icon size="32" class="text-yellow-500">
-            <InfoFilled />
-          </el-icon>
-        </div>
+    <section class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <article class="metric-card">
+        <p class="metric-label">日志总数</p>
+        <p class="metric-value">{{ stats.total }}</p>
+        <p class="metric-note">当前筛选条件下的总记录数</p>
+      </article>
+      <article class="metric-card">
+        <p class="metric-label">错误</p>
+        <p class="metric-value text-rose-600">{{ stats.error }}</p>
+        <p class="metric-note">优先排查的异常记录</p>
+      </article>
+      <article class="metric-card">
+        <p class="metric-label">警告</p>
+        <p class="metric-value text-amber-600">{{ stats.warn }}</p>
+        <p class="metric-note">需要关注但不阻断流程</p>
+      </article>
+      <article class="metric-card">
+        <p class="metric-label">信息</p>
+        <p class="metric-value text-sky-600">{{ stats.info }}</p>
+        <p class="metric-note">常规操作与审计轨迹</p>
+      </article>
+    </section>
+
+    <section class="toolbar-card p-4 sm:p-5">
+      <div class="grid gap-3 xl:grid-cols-[180px,minmax(0,1fr),minmax(0,1fr),auto]">
+        <el-select
+          v-model="levelFilter"
+          clearable
+          placeholder="日志级别"
+          @change="handleFiltersChange"
+        >
+          <el-option label="ERROR" value="error" />
+          <el-option label="WARN" value="warn" />
+          <el-option label="INFO" value="info" />
+          <el-option label="DEBUG" value="debug" />
+        </el-select>
+
+        <el-input
+          v-model="searchQuery"
+          clearable
+          placeholder="搜索模块、用户或消息内容"
+          @input="debouncedSearch"
+          @keyup.enter="handleFiltersChange"
+          @clear="handleFiltersChange"
+        />
+
+        <el-date-picker
+          v-model="dateRange"
+          type="datetimerange"
+          range-separator="至"
+          start-placeholder="开始时间"
+          end-placeholder="结束时间"
+          format="YYYY-MM-DD HH:mm"
+          value-format="YYYY-MM-DD HH:mm"
+          @change="handleFiltersChange"
+        />
+
+        <el-button plain @click="refreshLogs">刷新</el-button>
       </div>
+    </section>
 
-      <div class="bg-white p-4 rounded-lg shadow-sm border">
-        <div class="flex items-center justify-between">
-          <div>
-            <p class="text-sm text-gray-600">信息日志</p>
-            <p class="text-2xl font-bold text-blue-600">{{ stats.info }}</p>
-          </div>
-          <el-icon size="32" class="text-blue-500">
-            <InfoFilled />
-          </el-icon>
-        </div>
-      </div>
-    </div>
-
-    <el-table
-      :data="logList"
-      border
-      stripe
-      style="width: 100%"
-      v-loading="loading"
-      :row-key="(row: LogEntry) => row.id.toString()"
-      height="600"
-    >
-      <el-table-column label="时间" width="180">
-        <template #default="{ row }">
-          {{ formatDate(row.timestamp) }}
-        </template>
-      </el-table-column>
-
-      <el-table-column label="级别" width="100">
-        <template #default="{ row }">
-          <el-tag :type="getLevelType(row.level)" size="small">
-            {{ row.level.toUpperCase() }}
-          </el-tag>
-        </template>
-      </el-table-column>
-
-      <el-table-column label="模块" width="140">
-        <template #default="{ row }">
-          <el-tag size="small" type="info">{{ row.module }}</el-tag>
-        </template>
-      </el-table-column>
-
-      <el-table-column label="用户" width="140">
-        <template #default="{ row }">
-          {{ row.user || "系统" }}
-        </template>
-      </el-table-column>
-
-      <el-table-column label="消息" min-width="320" show-overflow-tooltip>
-        <template #default="{ row }">
-          <span :class="getMessageClass(row.level)">{{ row.message }}</span>
-        </template>
-      </el-table-column>
-
-      <el-table-column label="详情" width="90">
-        <template #default="{ row }">
-          <el-button
-            v-if="row.details"
-            size="small"
-            type="primary"
-            text
-            @click="viewLogDetails(row)"
-          >
-            查看
-          </el-button>
-        </template>
-      </el-table-column>
-    </el-table>
-
-    <div class="mt-4 flex justify-end">
-      <el-pagination
-        background
-        layout="prev, pager, next, sizes"
-        :current-page="pagination.page"
-        :page-size="pagination.limit"
-        :total="pagination.total"
-        :page-sizes="[20, 50, 100]"
-        @current-change="handlePageChange"
-        @size-change="handleSizeChange"
-      />
-    </div>
-
-    <el-dialog v-model="logDetailVisible" title="日志详情" width="680px">
-      <div v-if="selectedLog" class="space-y-4">
-        <div class="grid grid-cols-2 gap-4">
-          <div>
-            <label class="block text-sm font-medium text-gray-700">时间</label>
-            <p class="mt-1 text-sm text-gray-900">{{ formatDate(selectedLog.timestamp) }}</p>
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700">级别</label>
-            <el-tag :type="getLevelType(selectedLog.level)" class="mt-1">
-              {{ selectedLog.level.toUpperCase() }}
-            </el-tag>
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700">模块</label>
-            <p class="mt-1 text-sm text-gray-900">{{ selectedLog.module }}</p>
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700">用户</label>
-            <p class="mt-1 text-sm text-gray-900">{{ selectedLog.user || "系统" }}</p>
-          </div>
-        </div>
-
+    <section class="surface-card p-5 sm:p-6">
+      <div class="page-header">
         <div>
-          <label class="block text-sm font-medium text-gray-700">消息</label>
-          <p class="mt-1 text-sm text-gray-900">{{ selectedLog.message }}</p>
+          <h2 class="section-title">日志记录</h2>
+          <p class="section-description">小屏使用卡片，大屏保留表格。详情支持单独展开查看 JSON 内容。</p>
+        </div>
+      </div>
+
+      <div class="mt-5 lg:hidden">
+        <div v-if="loading" class="grid gap-4">
+          <div
+            v-for="index in 5"
+            :key="index"
+            class="h-44 animate-pulse rounded-3xl bg-slate-100"
+          />
         </div>
 
-        <div v-if="selectedLog.details">
-          <label class="block text-sm font-medium text-gray-700">详细信息</label>
-          <pre class="mt-1 p-3 bg-gray-100 rounded text-sm overflow-auto max-h-72">{{ JSON.stringify(selectedLog.details, null, 2) }}</pre>
+        <div v-else-if="logList.length" class="grid gap-4">
+          <article
+            v-for="row in logList"
+            :key="row.id"
+            class="rounded-3xl border border-slate-200/80 bg-white/90 p-4 shadow-sm"
+          >
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-2">
+                  <el-tag :type="getLevelType(row.level)" size="small">
+                    {{ row.level.toUpperCase() }}
+                  </el-tag>
+                  <span class="inline-chip">{{ row.module }}</span>
+                </div>
+                <p class="mt-3 text-sm font-semibold text-slate-900">
+                  {{ row.message }}
+                </p>
+              </div>
+              <span class="text-xs text-slate-400">
+                {{ formatDate(row.timestamp) }}
+              </span>
+            </div>
+
+            <div class="mt-4 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-500">
+              <span>{{ row.user || "系统" }}</span>
+              <el-button v-if="row.details" size="small" text @click="viewLogDetails(row)">
+                查看详情
+              </el-button>
+            </div>
+          </article>
         </div>
+
+        <el-empty v-else description="没有符合条件的日志" />
+      </div>
+
+      <div class="app-table mt-5 hidden lg:block">
+        <el-table
+          v-loading="loading"
+          :data="logList"
+          border
+          stripe
+          :row-key="(row: LogEntry) => row.id.toString()"
+        >
+          <el-table-column label="时间" width="180">
+            <template #default="{ row }">
+              {{ formatDate(row.timestamp) }}
+            </template>
+          </el-table-column>
+          <el-table-column label="级别" width="110">
+            <template #default="{ row }">
+              <el-tag :type="getLevelType(row.level)" size="small">
+                {{ row.level.toUpperCase() }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="模块" width="150">
+            <template #default="{ row }">
+              <span class="inline-chip !bg-slate-100">{{ row.module }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="用户" width="150">
+            <template #default="{ row }">
+              {{ row.user || "系统" }}
+            </template>
+          </el-table-column>
+          <el-table-column label="消息" min-width="360" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span :class="getMessageClass(row.level)">{{ row.message }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="详情" width="100" fixed="right">
+            <template #default="{ row }">
+              <el-button
+                v-if="row.details"
+                size="small"
+                text
+                type="primary"
+                @click="viewLogDetails(row)"
+              >
+                查看
+              </el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+
+      <div class="mt-5 flex justify-end">
+        <el-pagination
+          background
+          layout="prev, pager, next, sizes"
+          :current-page="pagination.page"
+          :page-size="pagination.limit"
+          :total="pagination.total"
+          :page-sizes="[20, 50, 100]"
+          @current-change="handlePageChange"
+          @size-change="handleSizeChange"
+        />
+      </div>
+    </section>
+
+    <el-dialog v-model="logDetailVisible" title="日志详情" width="min(92vw, 760px)">
+      <div v-if="selectedLog" class="page-shell">
+        <section class="surface-card p-5">
+          <div class="detail-grid md:grid-cols-2">
+            <div>
+              <div class="detail-label">时间</div>
+              <div class="detail-value">{{ formatDate(selectedLog.timestamp) }}</div>
+            </div>
+            <div>
+              <div class="detail-label">级别</div>
+              <div class="detail-value">
+                <el-tag :type="getLevelType(selectedLog.level)">
+                  {{ selectedLog.level.toUpperCase() }}
+                </el-tag>
+              </div>
+            </div>
+            <div>
+              <div class="detail-label">模块</div>
+              <div class="detail-value">{{ selectedLog.module }}</div>
+            </div>
+            <div>
+              <div class="detail-label">用户</div>
+              <div class="detail-value">{{ selectedLog.user || "系统" }}</div>
+            </div>
+            <div class="md:col-span-2">
+              <div class="detail-label">消息</div>
+              <div class="detail-value">{{ selectedLog.message }}</div>
+            </div>
+          </div>
+        </section>
+
+        <section v-if="selectedLog.details" class="surface-card p-5">
+          <h3 class="section-title">详细内容</h3>
+          <pre class="log-detail">{{ JSON.stringify(selectedLog.details, null, 2) }}</pre>
+        </section>
       </div>
     </el-dialog>
   </div>
@@ -213,14 +235,6 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import {
-  Refresh,
-  Download,
-  Delete,
-  Document,
-  Warning,
-  InfoFilled,
-} from "@element-plus/icons-vue";
 import {
   clearLogsApi,
   getLogsApi,
@@ -237,7 +251,6 @@ const levelFilter = ref("");
 const dateRange = ref<string[]>([]);
 const logDetailVisible = ref(false);
 const selectedLog = ref<LogEntry | null>(null);
-
 const stats = reactive<LogStats>({
   total: 0,
   error: 0,
@@ -245,18 +258,19 @@ const stats = reactive<LogStats>({
   info: 0,
   debug: 0,
 });
-
 const pagination = reactive({
   page: 1,
   limit: 50,
   total: 0,
 });
 
+let searchTimer: number | null = null;
+
 function buildParams(overrides?: Partial<GetLogsParams>): GetLogsParams {
   return {
     level: (levelFilter.value as GetLogsParams["level"]) || undefined,
-    module: searchQuery.value || undefined,
-    search: searchQuery.value || undefined,
+    module: undefined,
+    search: searchQuery.value.trim() || undefined,
     startDate: dateRange.value?.[0] || undefined,
     endDate: dateRange.value?.[1] || undefined,
     page: pagination.page,
@@ -275,66 +289,63 @@ async function fetchLogs(overrides?: Partial<GetLogsParams>) {
     pagination.page = response.page;
     pagination.limit = response.limit;
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : "获取日志失败";
-    ElMessage.error(errorMessage);
     logList.value = [];
     pagination.total = 0;
+    ElMessage.error(error instanceof Error ? error.message : "加载日志失败");
   } finally {
     loading.value = false;
   }
 }
 
+function debouncedSearch() {
+  if (searchTimer) {
+    clearTimeout(searchTimer);
+  }
+  searchTimer = window.setTimeout(() => {
+    handleFiltersChange();
+  }, 320);
+}
+
 function handleFiltersChange() {
+  if (searchTimer) {
+    clearTimeout(searchTimer);
+    searchTimer = null;
+  }
   pagination.page = 1;
-  fetchLogs();
+  void fetchLogs();
 }
 
 function refreshLogs() {
-  fetchLogs();
+  void fetchLogs();
 }
 
 function handlePageChange(page: number) {
   pagination.page = page;
-  fetchLogs();
+  void fetchLogs();
 }
 
 function handleSizeChange(size: number) {
   pagination.limit = size;
   pagination.page = 1;
-  fetchLogs();
+  void fetchLogs();
 }
 
 function getLevelType(level: string) {
-  switch (level) {
-    case "error":
-      return "danger";
-    case "warn":
-      return "warning";
-    case "info":
-      return "primary";
-    case "debug":
-      return "info";
-    default:
-      return "";
-  }
+  if (level === "error") return "danger";
+  if (level === "warn") return "warning";
+  if (level === "info") return "primary";
+  return "info";
 }
 
 function getMessageClass(level: string) {
-  switch (level) {
-    case "error":
-      return "text-red-600 font-medium";
-    case "warn":
-      return "text-yellow-600";
-    default:
-      return "text-gray-900";
-  }
+  if (level === "error") return "font-semibold text-rose-600";
+  if (level === "warn") return "text-amber-600";
+  return "text-slate-900";
 }
 
-function formatDate(dateStr: string) {
+function formatDate(value: string) {
   try {
-    const date = new Date(dateStr);
-    return date.toLocaleString("zh-CN", {
-      year: "numeric",
+    return new Date(value).toLocaleString("zh-CN", {
       month: "2-digit",
       day: "2-digit",
       hour: "2-digit",
@@ -342,7 +353,7 @@ function formatDate(dateStr: string) {
       second: "2-digit",
     });
   } catch {
-    return dateStr;
+    return value;
   }
 }
 
@@ -392,8 +403,7 @@ async function exportLogs() {
     URL.revokeObjectURL(url);
     ElMessage.success(`已导出 ${response.items.length} 条日志`);
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : "导出日志失败";
-    ElMessage.error(errorMessage);
+    ElMessage.error(error instanceof Error ? error.message : "导出日志失败");
   } finally {
     exporting.value = false;
   }
@@ -401,16 +411,11 @@ async function exportLogs() {
 
 async function clearLogs() {
   try {
-    await ElMessageBox.confirm(
-      "确定要清空所有系统日志吗？该操作不可恢复。",
-      "警告",
-      {
-        type: "warning",
-        confirmButtonText: "确认清空",
-        cancelButtonText: "取消",
-      },
-    );
-
+    await ElMessageBox.confirm("确定清空所有系统日志吗？", "警告", {
+      confirmButtonText: "清空",
+      cancelButtonText: "取消",
+      type: "warning",
+    });
     await clearLogsApi();
     logList.value = [];
     pagination.total = 0;
@@ -418,24 +423,27 @@ async function clearLogs() {
     ElMessage.success("系统日志已清空");
   } catch (error) {
     if (error !== "cancel") {
-      const errorMessage = error instanceof Error ? error.message : "清空日志失败";
-      ElMessage.error(errorMessage);
+      ElMessage.error(error instanceof Error ? error.message : "清空日志失败");
     }
   }
 }
 
 onMounted(() => {
-  fetchLogs();
+  void fetchLogs();
 });
 </script>
 
 <style scoped>
-pre {
-  font-family: "Monaco", "Menlo", "Ubuntu Mono", monospace;
+.log-detail {
+  margin: 1rem 0 0;
+  max-height: 360px;
+  overflow: auto;
+  border-radius: 20px;
+  background: #f8fafc;
+  padding: 1rem;
+  color: #0f172a;
+  font-family: "Monaco", "Menlo", "Consolas", monospace;
   font-size: 12px;
-}
-
-.space-y-4 > * + * {
-  margin-top: 1rem;
+  line-height: 1.65;
 }
 </style>

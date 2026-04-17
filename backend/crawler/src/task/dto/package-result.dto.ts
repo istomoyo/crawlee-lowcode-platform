@@ -1,6 +1,41 @@
 import { IsIn, IsObject, IsOptional, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 
+interface StructureConfigShape {
+  images?: string;
+  files?: string;
+  texts?: string;
+  data?: string;
+}
+
+interface BrowserFlowConfigShape {
+  detailPageField?: string;
+  detailPageWaitSelector?: string;
+  detailPageWaitTimeout?: number;
+}
+
+interface DownloadConfigShape {
+  images?: boolean;
+  files?: boolean;
+  texts?: boolean;
+  maxFileSize?: number;
+  timeout?: number;
+  strategy?: 'direct' | 'browser' | 'auto';
+  browserFlow?: BrowserFlowConfigShape;
+}
+
+interface FieldMappingConfigShape {
+  imageFields?: string[];
+  fileFields?: string[];
+  textFields?: string[];
+}
+
+interface PackageConfigShape {
+  structure?: StructureConfigShape;
+  download?: DownloadConfigShape;
+  fieldMapping?: FieldMappingConfigShape;
+}
+
 class StructureConfig {
   @IsOptional()
   images?: string;
@@ -13,6 +48,17 @@ class StructureConfig {
 
   @IsOptional()
   data?: string;
+}
+
+class BrowserFlowConfig {
+  @IsOptional()
+  detailPageField?: string;
+
+  @IsOptional()
+  detailPageWaitSelector?: string;
+
+  @IsOptional()
+  detailPageWaitTimeout?: number;
 }
 
 class DownloadConfig {
@@ -38,18 +84,7 @@ class DownloadConfig {
   @IsOptional()
   @ValidateNested()
   @Type(() => BrowserFlowConfig)
-  browserFlow?: BrowserFlowConfig;
-}
-
-class BrowserFlowConfig {
-  @IsOptional()
-  detailPageField?: string;
-
-  @IsOptional()
-  detailPageWaitSelector?: string;
-
-  @IsOptional()
-  detailPageWaitTimeout?: number;
+  browserFlow?: BrowserFlowConfigShape;
 }
 
 class FieldMappingConfig {
@@ -67,23 +102,23 @@ class PackageConfigDto {
   @IsOptional()
   @ValidateNested()
   @Type(() => StructureConfig)
-  structure?: StructureConfig;
+  structure?: StructureConfigShape;
 
   @IsOptional()
   @ValidateNested()
   @Type(() => DownloadConfig)
-  download?: DownloadConfig;
+  download?: DownloadConfigShape;
 
   @IsOptional()
   @ValidateNested()
   @Type(() => FieldMappingConfig)
-  fieldMapping?: FieldMappingConfig;
+  fieldMapping?: FieldMappingConfigShape;
 }
 
 export class PackageResultDto {
   @IsObject()
   @ValidateNested()
   @Type(() => PackageConfigDto)
-  packageConfig: PackageConfigDto;
+  packageConfig: PackageConfigShape;
 }
 

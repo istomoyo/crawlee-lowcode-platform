@@ -1,387 +1,334 @@
 <template>
-  <div class="p-6">
-    <div class="flex justify-between items-center mb-6">
-      <h1 class="text-2xl font-bold text-gray-900">系统设置</h1>
-      <el-button type="primary" @click="saveSettings" :loading="saving">
-        <el-icon><Check /></el-icon>
-        保存设置
-      </el-button>
-    </div>
-
-    <el-tabs v-model="activeTab" class="settings-tabs">
-      <el-tab-pane label="基础设置" name="basic">
-        <div class="bg-white p-6 rounded-lg shadow-sm border">
-          <h2 class="text-lg font-semibold mb-4">基础配置</h2>
-          <el-form :model="settings.basic" label-width="150px">
-            <el-form-item label="系统名称">
-              <el-input v-model="settings.basic.systemName" placeholder="Crawlee System" />
-            </el-form-item>
-            <el-form-item label="系统描述">
-              <el-input
-                v-model="settings.basic.systemDescription"
-                type="textarea"
-                :rows="3"
-                placeholder="基于 Crawlee 的低代码爬虫平台"
-              />
-            </el-form-item>
-            <el-form-item label="管理员邮箱">
-              <el-input v-model="settings.basic.adminEmail" placeholder="admin@example.com" />
-            </el-form-item>
-            <el-form-item label="系统语言">
-              <el-select v-model="settings.basic.language" style="width: 140px">
-                <el-option label="中文" value="zh-CN" />
-                <el-option label="English" value="en-US" />
-              </el-select>
-            </el-form-item>
-          </el-form>
-        </div>
-      </el-tab-pane>
-
-      <el-tab-pane label="爬虫设置" name="crawler">
-        <div class="bg-white p-6 rounded-lg shadow-sm border">
-          <h2 class="text-lg font-semibold mb-4">爬虫引擎配置</h2>
-          <el-form :model="settings.crawler" label-width="180px">
-            <el-form-item label="默认并发数">
-              <el-input-number
-                v-model="settings.crawler.defaultConcurrency"
-                :min="1"
-                :max="20"
-                controls-position="right"
-              />
-            </el-form-item>
-            <el-form-item label="最大请求数/任务">
-              <el-input-number
-                v-model="settings.crawler.maxRequestsPerCrawl"
-                :min="1"
-                :max="1000"
-                controls-position="right"
-              />
-            </el-form-item>
-            <el-form-item label="请求超时(秒)">
-              <el-input-number
-                v-model="settings.crawler.requestTimeout"
-                :min="5"
-                :max="300"
-                controls-position="right"
-              />
-            </el-form-item>
-            <el-form-item label="默认等待时间(毫秒)">
-              <el-input-number
-                v-model="settings.crawler.waitForTimeout"
-                :min="1000"
-                :max="60000"
-                :step="1000"
-                controls-position="right"
-              />
-            </el-form-item>
-          </el-form>
-        </div>
-      </el-tab-pane>
-
-      <el-tab-pane label="存储设置" name="storage">
-        <div class="bg-white p-6 rounded-lg shadow-sm border">
-          <h2 class="text-lg font-semibold mb-4">数据存储配置</h2>
-          <el-form :model="settings.storage" label-width="160px">
-            <el-form-item label="数据保留天数">
-              <el-input-number
-                v-model="settings.storage.datasetRetentionDays"
-                :min="1"
-                :max="365"
-                controls-position="right"
-              />
-            </el-form-item>
-            <el-form-item label="截图保留天数">
-              <el-input-number
-                v-model="settings.storage.screenshotRetentionDays"
-                :min="1"
-                :max="365"
-                controls-position="right"
-              />
-            </el-form-item>
-            <el-form-item label="日志保留天数">
-              <el-input-number
-                v-model="settings.storage.logRetentionDays"
-                :min="7"
-                :max="365"
-                controls-position="right"
-              />
-            </el-form-item>
-            <el-form-item label="自动清理">
-              <el-switch v-model="settings.storage.autoCleanup" />
-            </el-form-item>
-            <el-form-item label="清理执行时间">
-              <el-time-select
-                v-model="settings.storage.cleanupTime"
-                start="00:00"
-                step="01:00"
-                end="23:00"
-                placeholder="选择时间"
-              />
-            </el-form-item>
-          </el-form>
-        </div>
-      </el-tab-pane>
-
-      <el-tab-pane label="安全设置" name="security">
-        <div class="bg-white p-6 rounded-lg shadow-sm border">
-          <h2 class="text-lg font-semibold mb-4">安全配置</h2>
-          <el-form :model="settings.security" label-width="180px">
-            <el-form-item label="密码最小长度">
-              <el-input-number
-                v-model="settings.security.minPasswordLength"
-                :min="6"
-                :max="32"
-                controls-position="right"
-              />
-            </el-form-item>
-            <el-form-item label="登录失败锁定次数">
-              <el-input-number
-                v-model="settings.security.loginFailLockCount"
-                :min="3"
-                :max="10"
-                controls-position="right"
-              />
-            </el-form-item>
-            <el-form-item label="锁定时长(分钟)">
-              <el-input-number
-                v-model="settings.security.lockDurationMinutes"
-                :min="5"
-                :max="1440"
-                :step="5"
-                controls-position="right"
-              />
-            </el-form-item>
-            <el-form-item label="启用双因子认证">
-              <el-switch v-model="settings.security.enableTwoFactor" />
-            </el-form-item>
-            <el-form-item label="会话超时(分钟)">
-              <el-input-number
-                v-model="settings.security.sessionTimeoutMinutes"
-                :min="15"
-                :max="480"
-                :step="15"
-                controls-position="right"
-              />
-            </el-form-item>
-          </el-form>
-        </div>
-      </el-tab-pane>
-
-      <el-tab-pane label="邮件设置" name="email">
-        <div class="bg-white p-6 rounded-lg shadow-sm border">
-          <h2 class="text-lg font-semibold mb-4">邮件服务配置</h2>
-          <el-form :model="settings.email" label-width="140px">
-            <el-form-item label="启用邮件服务">
-              <el-switch v-model="settings.email.enableEmail" />
-            </el-form-item>
-            <template v-if="settings.email.enableEmail">
-              <el-form-item label="SMTP 主机">
-                <el-input v-model="settings.email.smtpHost" placeholder="smtp.example.com" />
-              </el-form-item>
-              <el-form-item label="SMTP 端口">
-                <el-input-number
-                  v-model="settings.email.smtpPort"
-                  :min="1"
-                  :max="65535"
-                  controls-position="right"
-                />
-              </el-form-item>
-              <el-form-item label="用户名">
-                <el-input v-model="settings.email.smtpUsername" placeholder="noreply@example.com" />
-              </el-form-item>
-              <el-form-item label="密码">
-                <el-input
-                  v-model="settings.email.smtpPassword"
-                  type="password"
-                  placeholder="SMTP 密码或授权码"
-                  show-password
-                />
-              </el-form-item>
-              <el-form-item label="启用 SSL">
-                <el-switch v-model="settings.email.smtpSSL" />
-              </el-form-item>
-              <el-form-item label="发件邮箱">
-                <el-input v-model="settings.email.fromEmail" placeholder="noreply@example.com" />
-              </el-form-item>
-              <el-form-item label="发件名称">
-                <el-input v-model="settings.email.fromName" placeholder="Crawlee System" />
-              </el-form-item>
-            </template>
-          </el-form>
-        </div>
-      </el-tab-pane>
-    </el-tabs>
-
-    <div class="mt-6 bg-white p-6 rounded-lg shadow-sm border">
-      <h2 class="text-lg font-semibold mb-4">系统状态</h2>
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div class="flex items-center gap-3">
-          <el-icon size="24" class="text-green-500">
-            <SuccessFilled />
-          </el-icon>
-          <div>
-            <p class="font-medium">运行状态</p>
-            <p class="text-sm text-gray-600">{{ systemInfo.status || "running" }}</p>
-          </div>
-        </div>
-        <div class="flex items-center gap-3">
-          <el-icon size="24" class="text-blue-500">
-            <Clock />
-          </el-icon>
-          <div>
-            <p class="font-medium">启动时间</p>
-            <p class="text-sm text-gray-600">{{ formatDate(systemInfo.startTime) }}</p>
-          </div>
-        </div>
-        <div class="flex items-center gap-3">
-          <el-icon size="24" class="text-purple-500">
-            <InfoFilled />
-          </el-icon>
-          <div>
-            <p class="font-medium">系统版本</p>
-            <p class="text-sm text-gray-600">{{ systemInfo.version }}</p>
-          </div>
-        </div>
+  <div v-loading="loading && !isReady" class="page-shell">
+    <header class="page-header">
+      <div>
+        <h1 class="page-title">系统设置</h1>
+        <p class="page-description">统一管理平台公告、维护提示、爬虫资源参数与清理策略，同时保持后台表单在不同屏宽下都清晰易读。</p>
       </div>
-    </div>
+      <div class="flex flex-wrap gap-2">
+        <el-button plain :loading="loading" @click="reloadAll">刷新</el-button>
+        <el-button type="primary" :loading="saving" :disabled="!isReady || loading" @click="saveSettings">保存设置</el-button>
+      </div>
+    </header>
+
+    <section class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <article class="metric-card">
+        <p class="metric-label">运行状态</p>
+        <p class="metric-value !text-2xl">{{ displayText(systemInfo.status, infoLoaded) }}</p>
+        <p class="metric-note">服务启动于 {{ displayText(formatDate(systemInfo.startTime), infoLoaded) }}</p>
+      </article>
+      <article class="metric-card">
+        <p class="metric-label">系统版本</p>
+        <p class="metric-value !text-2xl">{{ displayText(systemInfo.version, infoLoaded) }}</p>
+        <p class="metric-note">运行时长 {{ infoLoaded ? formatUptime(systemInfo.uptime) : "--" }}</p>
+      </article>
+      <article class="metric-card">
+        <p class="metric-label">平台公告</p>
+        <p class="metric-value">{{ settingsLoaded ? (settings.basic.announcementEnabled ? "开启" : "关闭") : "--" }}</p>
+        <p class="metric-note">当前标题 {{ displayText(settings.basic.announcementTitle, settingsLoaded) }}</p>
+      </article>
+      <article class="metric-card">
+        <p class="metric-label">自动清理</p>
+        <p class="metric-value">{{ settingsLoaded ? (settings.storage.autoCleanup ? cleanupModeLabel(settings.storage.cleanupMode) : "关闭") : "--" }}</p>
+        <p class="metric-note">执行时间 {{ displayText(settings.storage.cleanupTime, settingsLoaded) }}</p>
+      </article>
+    </section>
+
+    <section class="surface-card p-5 sm:p-6">
+      <el-tabs v-model="activeTab" class="app-tabs">
+        <el-tab-pane label="平台与公告" name="platform">
+          <div class="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
+            <article class="toolbar-card p-5">
+              <div class="page-header">
+                <div>
+                  <h2 class="section-title">平台基础信息</h2>
+                  <p class="section-description">这些信息会同步到布局标题、对外展示信息与登录页文案。</p>
+                </div>
+              </div>
+              <el-form label-position="top" class="mt-5 grid gap-4">
+                <el-form-item label="系统名称"><el-input v-model="settings.basic.systemName" placeholder="Crawlee Workspace" /></el-form-item>
+                <el-form-item label="系统描述"><el-input v-model="settings.basic.systemDescription" maxlength="120" show-word-limit placeholder="描述平台用途、团队定位或当前版本重点" /></el-form-item>
+                <div class="grid gap-4 md:grid-cols-2">
+                  <el-form-item label="管理员邮箱"><el-input v-model="settings.basic.adminEmail" placeholder="admin@example.com" /></el-form-item>
+                  <el-form-item label="语言">
+                    <el-select v-model="settings.basic.language" class="w-full">
+                      <el-option label="中文" value="zh-CN" />
+                      <el-option label="English" value="en-US" />
+                    </el-select>
+                  </el-form-item>
+                </div>
+              </el-form>
+            </article>
+
+            <article class="toolbar-card p-5">
+              <div class="page-header">
+                <div>
+                  <h2 class="section-title">公告预览</h2>
+                  <p class="section-description">实时预览工作台顶部和维护提示卡片的展示状态。</p>
+                </div>
+              </div>
+              <div class="mt-5 grid gap-4">
+                <div class="rounded-3xl border border-slate-200/80 bg-white p-4">
+                  <div class="flex items-center justify-between gap-3">
+                    <div>
+                      <p class="metric-label">平台公告</p>
+                      <p class="mt-2 text-base font-semibold text-slate-900">{{ settings.basic.announcementTitle || "未设置公告标题" }}</p>
+                    </div>
+                    <el-switch v-model="settings.basic.announcementEnabled" />
+                  </div>
+                  <p class="mt-3 text-sm leading-6 text-slate-600">{{ settings.basic.announcementContent || "公告内容会展示在工作台顶部。" }}</p>
+                </div>
+
+                <div class="rounded-3xl border border-slate-200/80 bg-white p-4">
+                  <div class="flex items-center justify-between gap-3">
+                    <div>
+                      <p class="metric-label">维护提示</p>
+                      <p class="mt-2 text-base font-semibold text-slate-900">{{ settings.basic.maintenanceTitle || "未设置维护标题" }}</p>
+                    </div>
+                    <el-switch v-model="settings.basic.maintenanceEnabled" />
+                  </div>
+                  <p class="mt-3 text-sm leading-6 text-slate-600">{{ settings.basic.maintenanceContent || "维护信息会优先展示给所有用户。" }}</p>
+                </div>
+              </div>
+            </article>
+          </div>
+
+          <div class="mt-4 grid gap-4 xl:grid-cols-2">
+            <article class="toolbar-card p-5">
+              <h3 class="section-title">平台公告</h3>
+              <el-form label-position="top" class="mt-5 grid gap-4">
+                <el-form-item label="启用公告"><el-switch v-model="settings.basic.announcementEnabled" /></el-form-item>
+                <el-form-item label="公告标题"><el-input v-model="settings.basic.announcementTitle" maxlength="60" show-word-limit /></el-form-item>
+                <el-form-item label="公告内容"><el-input v-model="settings.basic.announcementContent" maxlength="220" show-word-limit /></el-form-item>
+                <el-form-item label="公告样式">
+                  <el-select v-model="settings.basic.announcementVariant" class="w-full">
+                    <el-option label="信息" value="info" />
+                    <el-option label="成功" value="success" />
+                    <el-option label="提醒" value="warning" />
+                  </el-select>
+                </el-form-item>
+              </el-form>
+            </article>
+
+            <article class="toolbar-card p-5">
+              <h3 class="section-title">维护提示</h3>
+              <el-form label-position="top" class="mt-5 grid gap-4">
+                <el-form-item label="启用维护提示"><el-switch v-model="settings.basic.maintenanceEnabled" /></el-form-item>
+                <el-form-item label="维护标题"><el-input v-model="settings.basic.maintenanceTitle" maxlength="60" show-word-limit /></el-form-item>
+                <el-form-item label="维护内容"><el-input v-model="settings.basic.maintenanceContent" maxlength="220" show-word-limit /></el-form-item>
+                <div class="grid gap-4 md:grid-cols-2">
+                  <el-form-item label="维护样式">
+                    <el-select v-model="settings.basic.maintenanceVariant" class="w-full">
+                      <el-option label="信息" value="info" />
+                      <el-option label="成功" value="success" />
+                      <el-option label="提醒" value="warning" />
+                      <el-option label="错误" value="error" />
+                    </el-select>
+                  </el-form-item>
+                  <el-form-item label="开始时间">
+                    <el-date-picker v-model="settings.basic.maintenanceStartAt" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" format="YYYY-MM-DD HH:mm" class="w-full" />
+                  </el-form-item>
+                </div>
+                <el-form-item label="结束时间">
+                  <el-date-picker v-model="settings.basic.maintenanceEndAt" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" format="YYYY-MM-DD HH:mm" class="w-full" />
+                </el-form-item>
+              </el-form>
+            </article>
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="爬虫与存储" name="crawler">
+          <div class="grid gap-4 xl:grid-cols-2">
+            <article class="toolbar-card p-5">
+              <h2 class="section-title">爬虫引擎</h2>
+              <el-form label-position="top" class="mt-5 grid gap-4">
+                <div class="grid gap-4 md:grid-cols-2">
+                  <el-form-item label="默认并发"><el-input-number v-model="settings.crawler.defaultConcurrency" :min="1" :max="20" class="w-full" /></el-form-item>
+                  <el-form-item label="单任务最大请求数"><el-input-number v-model="settings.crawler.maxRequestsPerCrawl" :min="1" :max="5000" class="w-full" /></el-form-item>
+                </div>
+                <div class="grid gap-4 md:grid-cols-2">
+                  <el-form-item label="请求超时（秒）"><el-input-number v-model="settings.crawler.requestTimeout" :min="5" :max="300" class="w-full" /></el-form-item>
+                  <el-form-item label="默认等待（毫秒）"><el-input-number v-model="settings.crawler.waitForTimeout" :min="500" :max="120000" :step="500" class="w-full" /></el-form-item>
+                </div>
+              </el-form>
+            </article>
+
+            <article class="toolbar-card p-5">
+              <h2 class="section-title">存储与清理</h2>
+              <el-form label-position="top" class="mt-5 grid gap-4">
+                <div class="grid gap-4 md:grid-cols-2">
+                  <el-form-item label="数据保留天数"><el-input-number v-model="settings.storage.datasetRetentionDays" :min="1" :max="365" class="w-full" /></el-form-item>
+                  <el-form-item label="截图保留天数"><el-input-number v-model="settings.storage.screenshotRetentionDays" :min="1" :max="365" class="w-full" /></el-form-item>
+                </div>
+                <div class="grid gap-4 md:grid-cols-2">
+                  <el-form-item label="日志保留天数"><el-input-number v-model="settings.storage.logRetentionDays" :min="7" :max="365" class="w-full" /></el-form-item>
+                  <el-form-item label="清理模式">
+                    <el-select v-model="settings.storage.cleanupMode" class="w-full">
+                      <el-option label="安全" value="safe" />
+                      <el-option label="标准" value="standard" />
+                      <el-option label="深度" value="deep" />
+                    </el-select>
+                  </el-form-item>
+                </div>
+                <div class="grid gap-4 md:grid-cols-2">
+                  <el-form-item label="启用自动清理"><el-switch v-model="settings.storage.autoCleanup" /></el-form-item>
+                  <el-form-item label="执行时间"><el-time-select v-model="settings.storage.cleanupTime" start="00:00" step="00:30" end="23:30" class="w-full" /></el-form-item>
+                </div>
+              </el-form>
+            </article>
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="安全与邮件" name="security">
+          <div class="grid gap-4 xl:grid-cols-2">
+            <article class="toolbar-card p-5">
+              <h2 class="section-title">安全策略</h2>
+              <el-form label-position="top" class="mt-5 grid gap-4">
+                <div class="grid gap-4 md:grid-cols-2">
+                  <el-form-item label="最小密码长度"><el-input-number v-model="settings.security.minPasswordLength" :min="6" :max="32" class="w-full" /></el-form-item>
+                  <el-form-item label="登录失败锁定次数"><el-input-number v-model="settings.security.loginFailLockCount" :min="3" :max="10" class="w-full" /></el-form-item>
+                </div>
+                <div class="grid gap-4 md:grid-cols-2">
+                  <el-form-item label="锁定时长（分钟）"><el-input-number v-model="settings.security.lockDurationMinutes" :min="5" :max="1440" class="w-full" /></el-form-item>
+                  <el-form-item label="会话超时（分钟）"><el-input-number v-model="settings.security.sessionTimeoutMinutes" :min="15" :max="1440" class="w-full" /></el-form-item>
+                </div>
+                <el-form-item label="双因素认证"><el-switch v-model="settings.security.enableTwoFactor" /></el-form-item>
+              </el-form>
+            </article>
+
+            <article class="toolbar-card p-5">
+              <h2 class="section-title">邮件服务</h2>
+              <el-form label-position="top" class="mt-5 grid gap-4">
+                <el-form-item label="启用邮件服务"><el-switch v-model="settings.email.enableEmail" /></el-form-item>
+                <template v-if="settings.email.enableEmail">
+                  <div class="grid gap-4 md:grid-cols-2">
+                    <el-form-item label="SMTP 主机"><el-input v-model="settings.email.smtpHost" /></el-form-item>
+                    <el-form-item label="SMTP 端口"><el-input-number v-model="settings.email.smtpPort" :min="1" :max="65535" class="w-full" /></el-form-item>
+                  </div>
+                  <div class="grid gap-4 md:grid-cols-2">
+                    <el-form-item label="用户名"><el-input v-model="settings.email.smtpUsername" /></el-form-item>
+                    <el-form-item label="密码"><el-input v-model="settings.email.smtpPassword" type="password" show-password /></el-form-item>
+                  </div>
+                  <div class="grid gap-4 md:grid-cols-2">
+                    <el-form-item label="发件邮箱"><el-input v-model="settings.email.fromEmail" /></el-form-item>
+                    <el-form-item label="发件名称"><el-input v-model="settings.email.fromName" /></el-form-item>
+                  </div>
+                  <el-form-item label="启用 SSL"><el-switch v-model="settings.email.smtpSSL" /></el-form-item>
+                </template>
+              </el-form>
+            </article>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
-import { Check, SuccessFilled, Clock, InfoFilled } from "@element-plus/icons-vue";
-import {
-  getSystemInfoApi,
-  getSystemSettingsApi,
-  updateSystemSettingsApi,
-  type SystemInfo,
-  type SystemSettings,
-} from "@/api/admin";
+import { getSystemInfoApi, getSystemSettingsApi, updateSystemSettingsApi, type SystemInfo, type SystemSettings } from "@/api/admin";
 
-const activeTab = ref("basic");
+function createDefaultSettings(): SystemSettings {
+  return {
+    basic: { systemName: "", systemDescription: "", adminEmail: "", language: "zh-CN", announcementEnabled: false, announcementTitle: "", announcementContent: "", announcementVariant: "info", maintenanceEnabled: false, maintenanceTitle: "", maintenanceContent: "", maintenanceVariant: "warning", maintenanceStartAt: "", maintenanceEndAt: "" },
+    crawler: { defaultConcurrency: 0, maxRequestsPerCrawl: 0, requestTimeout: 0, waitForTimeout: 0 },
+    storage: { datasetRetentionDays: 0, screenshotRetentionDays: 0, logRetentionDays: 0, autoCleanup: false, cleanupTime: "", cleanupMode: "safe" },
+    security: { minPasswordLength: 0, loginFailLockCount: 0, lockDurationMinutes: 0, enableTwoFactor: false, sessionTimeoutMinutes: 0 },
+    email: { enableEmail: false, smtpHost: "", smtpPort: 0, smtpUsername: "", smtpPassword: "", smtpSSL: false, fromEmail: "", fromName: "" },
+  };
+}
+
+const activeTab = ref("platform");
+const loading = ref(false);
 const saving = ref(false);
+const settingsLoaded = ref(false);
+const infoLoaded = ref(false);
+const settings = reactive<SystemSettings>(createDefaultSettings());
+const systemInfo = reactive<SystemInfo>({ startTime: "", version: "", status: "", uptime: 0 });
+const isReady = computed(() => settingsLoaded.value && infoLoaded.value);
 
-const settings = reactive<SystemSettings>({
-  basic: {
-    systemName: "Crawlee System",
-    systemDescription: "基于 Crawlee 的低代码爬虫平台",
-    adminEmail: "admin@example.com",
-    language: "zh-CN",
-  },
-  crawler: {
-    defaultConcurrency: 5,
-    maxRequestsPerCrawl: 100,
-    requestTimeout: 30,
-    waitForTimeout: 30000,
-  },
-  storage: {
-    datasetRetentionDays: 30,
-    screenshotRetentionDays: 30,
-    logRetentionDays: 90,
-    autoCleanup: true,
-    cleanupTime: "02:00",
-  },
-  security: {
-    minPasswordLength: 8,
-    loginFailLockCount: 5,
-    lockDurationMinutes: 30,
-    enableTwoFactor: false,
-    sessionTimeoutMinutes: 60,
-  },
-  email: {
-    enableEmail: false,
-    smtpHost: "",
-    smtpPort: 587,
-    smtpUsername: "",
-    smtpPassword: "",
-    smtpSSL: true,
-    fromEmail: "",
-    fromName: "Crawlee System",
-  },
-});
-
-const systemInfo = reactive<SystemInfo>({
-  startTime: "",
-  version: "1.0.0",
-  status: "running",
-  uptime: 0,
-});
+function assignSettings(payload: SystemSettings) {
+  Object.assign(settings.basic, payload.basic || {});
+  Object.assign(settings.crawler, payload.crawler || {});
+  Object.assign(settings.storage, payload.storage || {});
+  Object.assign(settings.security, payload.security || {});
+  Object.assign(settings.email, payload.email || {});
+}
 
 async function loadSettings() {
   const response = await getSystemSettingsApi();
-  Object.assign(settings, response);
+  assignSettings(response);
+  settingsLoaded.value = true;
 }
 
 async function loadSystemInfo() {
   const response = await getSystemInfoApi();
   Object.assign(systemInfo, response);
+  infoLoaded.value = true;
+}
+
+async function reloadAll() {
+  try {
+    loading.value = true;
+    await Promise.all([loadSettings(), loadSystemInfo()]);
+    ElMessage.success("系统设置已刷新");
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "刷新失败");
+  } finally {
+    loading.value = false;
+  }
 }
 
 async function saveSettings() {
   try {
     saving.value = true;
     const response = await updateSystemSettingsApi(settings);
-    Object.assign(settings, response.data!);
+    assignSettings(response);
+    settingsLoaded.value = true;
     ElMessage.success("系统设置已保存");
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : "保存系统设置失败";
-    ElMessage.error(errorMessage);
+    ElMessage.error(error instanceof Error ? error.message : "保存系统设置失败");
   } finally {
     saving.value = false;
   }
 }
 
-function formatDate(dateStr?: string) {
-  if (!dateStr) {
-    return "-";
-  }
+function displayText(value?: string | null, enabled = true) {
+  if (!enabled) return "--";
+  const normalized = String(value || "").trim();
+  return normalized || "--";
+}
 
+function cleanupModeLabel(mode?: string) {
+  if (mode === "safe") return "安全";
+  if (mode === "standard") return "标准";
+  if (mode === "deep") return "深度";
+  return "--";
+}
+
+function formatDate(value?: string | null) {
+  if (!value) return "--";
   try {
-    const date = new Date(dateStr);
-    return date.toLocaleString("zh-CN", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
+    return new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
   } catch {
-    return dateStr;
+    return value;
   }
 }
 
-onMounted(async () => {
-  try {
-    await Promise.all([loadSettings(), loadSystemInfo()]);
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : "加载系统设置失败";
-    ElMessage.error(errorMessage);
+function formatUptime(seconds?: number) {
+  const totalSeconds = Number(seconds || 0);
+  if (!totalSeconds) return "--";
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  if (hours >= 24) {
+    const days = Math.floor(hours / 24);
+    return `${days} 天 ${hours % 24} 小时`;
   }
+  return `${hours} 小时 ${minutes} 分钟`;
+}
+
+onMounted(() => {
+  void reloadAll();
 });
 </script>
-
-<style scoped>
-.settings-tabs {
-  background: white;
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-:deep(.el-tabs__header) {
-  margin: 0;
-}
-
-:deep(.el-tabs__nav-wrap::after) {
-  display: none;
-}
-
-:deep(.el-tabs__item) {
-  border-bottom: 2px solid transparent;
-}
-
-:deep(.el-tabs__item.is-active) {
-  border-bottom-color: #409eff;
-}
-</style>

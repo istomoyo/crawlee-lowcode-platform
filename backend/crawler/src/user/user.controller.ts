@@ -67,8 +67,8 @@ export class UserController {
   @UseGuards(JwtAuthGuard)
   @Post('logout')
   @SuccessMessage('登出成功')
-  logout(@Req() req) {
-    return this.userService.logout(req.user!.id);
+  logout(@Req() req, @Res({ passthrough: true }) res: Response) {
+    return this.userService.logout(req.user!.id, res);
   }
 
   @UseGuards(JwtAuthGuard)

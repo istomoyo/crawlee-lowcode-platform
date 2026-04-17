@@ -1,7 +1,8 @@
 // dto/xpath-parse.dto.ts
 import { IsString, IsUrl, IsEnum, IsOptional } from 'class-validator';
+import { TaskDebugCookieDto } from './task-debug-cookie.dto';
 
-export class XpathParseDto {
+export class XpathParseDto extends TaskDebugCookieDto {
   @IsUrl()
   url: string;
 

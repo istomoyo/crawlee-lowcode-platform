@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import {
   getUserInfoApi,
   loginApi,
@@ -15,70 +15,91 @@ export interface User {
   avatar?: string;
 }
 
+type LoginResponse = {
+  user: User;
+};
+
 export const useUserStore = defineStore("user", () => {
   const user = ref<User | null>(null);
   const loading = ref(false);
-  const checked = ref(false); // ⭐ 是否已经尝试过获取用户信息
+  const checked = ref(false);
+  let fetchPromise: Promise<User | null> | null = null;
 
-  const init = async () => {
-    if (checked.value) return user.value;
-    // ⭐ 先读取 sessionStorage
-    const userStr = sessionStorage.getItem("user");
-    if (userStr) {
-      user.value = JSON.parse(userStr);
-      checked.value = true;
+  const isAdmin = computed(() => user.value?.role === "admin");
+
+  async function init() {
+    if (checked.value) {
       return user.value;
     }
-    // 没有再查API
-    return await fetchUserInfo();
-  };
 
-  const fetchUserInfo = async () => {
-    if (loading.value) return user.value;
-    loading.value = true;
-
-    try {
-      const res = await getUserInfoApi();
-      user.value = res;
-      sessionStorage.setItem("user", JSON.stringify(res));
-      return res;
-    } catch (e: any) {
-      // ⭐ 401：明确标记为“已检查且未登录”
-      user.value = null;
-      sessionStorage.removeItem("user");
-      return null;
-    } finally {
-      loading.value = false;
-      checked.value = true; // ⭐ 无论成功失败，都标记
+    const userStr = sessionStorage.getItem("user");
+    if (userStr) {
+      try {
+        user.value = JSON.parse(userStr) as User;
+        checked.value = true;
+        return user.value;
+      } catch {
+        sessionStorage.removeItem("user");
+      }
     }
-  };
-  interface LoginResponse {
-    user: User;
+
+    return await fetchUserInfo();
   }
 
-  interface LoginResponse {
-    user: User;
+  async function fetchUserInfo() {
+    if (fetchPromise) {
+      return await fetchPromise;
+    }
+
+    fetchPromise = (async () => {
+      loading.value = true;
+      try {
+        const profile = await getUserInfoApi();
+        user.value = profile;
+        sessionStorage.setItem("user", JSON.stringify(profile));
+        return profile;
+      } catch {
+        user.value = null;
+        sessionStorage.removeItem("user");
+        return null;
+      } finally {
+        loading.value = false;
+        checked.value = true;
+        fetchPromise = null;
+      }
+    })();
+
+    return await fetchPromise;
   }
 
-  const login = async (params: LoginParams) => {
-    const res = (await loginApi(params)) as unknown as LoginResponse;
-    user.value = res.user;
-    sessionStorage.setItem("user", JSON.stringify(user.value));
-  };
+  async function login(params: LoginParams) {
+    const response = (await loginApi(params)) as unknown as LoginResponse;
+    user.value = response.user;
+    checked.value = true;
+    sessionStorage.setItem("user", JSON.stringify(response.user));
+    return response.user;
+  }
 
-  const logout = async () => {
+  async function logout() {
     try {
       await logoutApi();
     } catch (error) {
-      // 即使 API 调用失败，也继续执行本地清理
-      console.error("登出 API 调用失败:", error);
+      console.error("Logout API failed:", error);
     } finally {
-      // 清理本地状态
       user.value = null;
       checked.value = false;
       sessionStorage.removeItem("user");
     }
-  };
+  }
 
-  return { user, init, fetchUserInfo, login, logout,checked };
+  return {
+    user,
+    loading,
+    checked,
+    isAdmin,
+    init,
+    fetchUserInfo,
+    login,
+    logout,
+  };
 });

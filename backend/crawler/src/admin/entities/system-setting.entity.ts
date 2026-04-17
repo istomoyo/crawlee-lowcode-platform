@@ -39,9 +39,19 @@ export class SystemSetting {
     return {
       [SettingKey.BASIC]: {
         systemName: 'Crawlee System',
-        systemDescription: '基于Crawlee的低代码爬虫平台',
+        systemDescription: '基于 Crawlee 的低代码爬虫平台',
         adminEmail: 'admin@example.com',
         language: 'zh-CN',
+        announcementEnabled: false,
+        announcementTitle: '平台公告',
+        announcementContent: '',
+        announcementVariant: 'info' as const,
+        maintenanceEnabled: false,
+        maintenanceTitle: '系统维护提醒',
+        maintenanceContent: '',
+        maintenanceVariant: 'warning' as const,
+        maintenanceStartAt: '',
+        maintenanceEndAt: '',
       },
       [SettingKey.CRAWLER]: {
         defaultConcurrency: 5,
@@ -55,6 +65,7 @@ export class SystemSetting {
         logRetentionDays: 90,
         autoCleanup: true,
         cleanupTime: '02:00',
+        cleanupMode: 'safe' as const,
       },
       [SettingKey.SECURITY]: {
         minPasswordLength: 8,

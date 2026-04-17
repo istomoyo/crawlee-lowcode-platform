@@ -1,21 +1,11 @@
-/*
-Execution 爬虫执行实体
-字段：
-id: 执行 ID，自增
-task: 关联的任务
-status: 执行状态，running | success | failed
-log: 执行日志 or 错误原因
-startTime: 开始时间
-endTime: 结束时间
-*/
 import {
-  Entity,
-  PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
-  UpdateDateColumn,
-  ManyToOne,
+  Entity,
   JoinColumn,
+  ManyToOne,
+  PrimaryGeneratedColumn,
+  UpdateDateColumn,
 } from 'typeorm';
 import { Task } from '../../task/entities/task.entity';
 
@@ -32,13 +22,28 @@ export class Execution {
   task: Task;
 
   @Column({ default: 'running' })
-  status: string; // running | success | failed
+  status: string;
 
   @Column('text', { nullable: true })
-  log: string; // 执行日志 or 错误原因
+  log: string;
 
   @Column({ nullable: true })
-  resultPath: string; // 执行结果文件路径
+  resultPath: string;
+
+  @Column('text', { nullable: true })
+  runtimeCookieEncrypted?: string | null;
+
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  runtimeCookieIv?: string | null;
+
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  runtimeCookieAuthTag?: string | null;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  runtimeCookieDomain?: string | null;
+
+  @Column({ type: 'datetime', nullable: true })
+  runtimeCookieExpiresAt?: Date | null;
 
   @CreateDateColumn()
   startTime: Date;

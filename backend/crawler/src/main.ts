@@ -18,11 +18,13 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import { IoAdapter } from '@nestjs/platform-socket.io';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { resolveAuthCookieConfig } from './config/runtime-security';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const configService = app.get(ConfigService);
   const logger = new Logger('Bootstrap');
+  const authCookieConfig = resolveAuthCookieConfig();
 
   // 启用WebSocket适配器
   app.useWebSocketAdapter(new IoAdapter(app));
@@ -53,7 +55,7 @@ async function bootstrap() {
     .setDescription('基于 Crawlee 的低代码爬虫平台 API 文档')
     .setVersion('1.0')
     .addBearerAuth()
-    .addCookieAuth('token')
+    .addCookieAuth(authCookieConfig.name)
     .build();
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api', app, document);

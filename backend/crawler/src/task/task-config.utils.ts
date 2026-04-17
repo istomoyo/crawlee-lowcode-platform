@@ -1,10 +1,16 @@
 import {
+  BehaviorStep,
+  BehaviorStepType,
   CrawleeTaskConfig,
+  NestedExtractContext,
+  NestedSelectorConfig,
   ResultFilterMode,
   ResultFilterOperator,
   ResultFilterRule,
+  SelectorConfig,
   TaskNotificationConfig,
 } from './dto/execute-task.dto';
+import { isUnsafeCustomJsEnabled } from '../config/runtime-security';
 
 const LEGACY_STEP4_KEYS = [
   'name',
@@ -41,28 +47,345 @@ const FILTER_OPERATORS: ResultFilterOperator[] = [
 ];
 
 const FILTER_MODES: ResultFilterMode[] = ['operator', 'function'];
+const BEHAVIOR_STEP_TYPES: BehaviorStepType[] = [
+  'open',
+  'click',
+  'type',
+  'wait',
+  'extract',
+  'scroll',
+  'loop',
+  'condition',
+  'customJS',
+];
+
+export interface SanitizeTaskConfigOptions {
+  allowInlineCookieString?: boolean;
+}
 
 export function sanitizeTaskConfig(
   config?: Partial<CrawleeTaskConfig> | Record<string, any> | null,
+  options: SanitizeTaskConfigOptions = {},
 ): Partial<CrawleeTaskConfig> {
   if (!config || typeof config !== 'object') {
     return {};
   }
 
+  const allowInlineCookieString = options.allowInlineCookieString !== false;
   const nextConfig: Record<string, any> = { ...config };
 
   for (const key of LEGACY_STEP4_KEYS) {
     delete nextConfig[key];
   }
 
-  const cookieString = String(config.cookieString ?? '').trim();
-  nextConfig.useCookie = Boolean(config.useCookie && cookieString);
-  nextConfig.cookieString = nextConfig.useCookie ? cookieString : undefined;
-  nextConfig.cookieDomain = normalizeCookieDomain(config.cookieDomain);
+  const cookieString = allowInlineCookieString
+    ? String(config.cookieString ?? '').trim()
+    : '';
+  const cookieCredentialId = normalizePositiveInt(config.cookieCredentialId);
+  nextConfig.useCookie = Boolean(
+    config.useCookie &&
+      ((allowInlineCookieString && cookieString) || cookieCredentialId),
+  );
+  nextConfig.cookieString =
+    nextConfig.useCookie && allowInlineCookieString && cookieString
+      ? cookieString
+      : undefined;
+  nextConfig.cookieDomain = nextConfig.useCookie
+    ? normalizeCookieDomain(config.cookieDomain)
+    : undefined;
+  nextConfig.cookieCredentialId = nextConfig.useCookie
+    ? cookieCredentialId
+    : undefined;
+  // Front-end has removed advanced behavior-task editing. Legacy payloads are
+  // normalized back to the simple XPath flow to keep execution behavior stable.
+  nextConfig.taskMode = 'simple';
+  nextConfig.preActions = sanitizePreActions(config.preActions);
+  nextConfig.selectors = sanitizeSelectorConfigs(config.selectors);
+  nextConfig.nestedContexts = sanitizeNestedContexts(config.nestedContexts);
+  nextConfig.behaviorSteps = [];
   nextConfig.resultFilters = sanitizeResultFilters(config.resultFilters);
   nextConfig.notification = sanitizeTaskNotification(config.notification);
 
   return nextConfig as Partial<CrawleeTaskConfig>;
+}
+
+export function hasInlineCookieString(
+  config?: Partial<CrawleeTaskConfig> | Record<string, any> | null,
+): boolean {
+  return Boolean(String(config?.cookieString ?? '').trim());
+}
+
+export function listUnsafeCustomJsFeatures(
+  config?: Partial<CrawleeTaskConfig> | Record<string, any> | null,
+): string[] {
+  if (!config || typeof config !== 'object') {
+    return [];
+  }
+
+  const features = new Set<string>();
+  const rawConfig = config as Partial<CrawleeTaskConfig> & Record<string, unknown>;
+
+  if (
+    Array.isArray(rawConfig.resultFilters) &&
+    rawConfig.resultFilters.some((rule) =>
+      String((rule as ResultFilterRule)?.functionCode ?? '').trim(),
+    )
+  ) {
+    features.add('结果筛选 JS 函数');
+  }
+
+  collectSelectorCustomJs(rawConfig.selectors, features);
+
+  if (Array.isArray(rawConfig.nestedContexts)) {
+    for (const context of rawConfig.nestedContexts as NestedExtractContext[]) {
+      collectSelectorCustomJs(context?.selectors, features);
+    }
+  }
+
+  collectBehaviorCustomJs(rawConfig.behaviorSteps, features);
+
+  return Array.from(features);
+}
+
+function sanitizePreActions(actions: unknown) {
+  if (!Array.isArray(actions)) {
+    return [];
+  }
+
+  return actions.reduce<
+    Array<{
+      type: 'click' | 'type' | 'wait_for_selector' | 'wait_for_timeout';
+      selector?: string;
+      value?: string;
+      timeout?: number;
+    }>
+  >((result, action) => {
+    const current = (action || {}) as Record<string, unknown>;
+    const type = String(current.type || '').trim();
+
+    if (
+      type !== 'click' &&
+      type !== 'type' &&
+      type !== 'wait_for_selector' &&
+      type !== 'wait_for_timeout'
+    ) {
+      return result;
+    }
+
+    const selector = String(current.selector ?? '').trim();
+    const timeout = Number(current.timeout);
+    result.push({
+      type,
+      selector: selector || undefined,
+      value: type === 'type' ? String(current.value ?? '') : undefined,
+      timeout: Number.isFinite(timeout) ? timeout : undefined,
+    });
+    return result;
+  }, []);
+}
+
+function sanitizeSelectorConfigs(selectors: unknown): SelectorConfig[] {
+  if (!Array.isArray(selectors)) {
+    return [];
+  }
+
+  return selectors.reduce<SelectorConfig[]>((result, selector) => {
+    const current = (selector || {}) as Partial<SelectorConfig>;
+    const name = String(current.name ?? '').trim();
+    const selectorValue = String(current.selector ?? '').trim();
+    const type = current.type;
+
+    if (
+      !name ||
+      !selectorValue ||
+      (type !== 'text' && type !== 'link' && type !== 'image')
+    ) {
+      return result;
+    }
+
+    result.push({
+      name,
+      selector: selectorValue,
+      type,
+      contentFormat:
+        current.contentFormat === 'html' ||
+        current.contentFormat === 'markdown' ||
+        current.contentFormat === 'smart'
+          ? current.contentFormat
+          : current.contentFormat === 'text'
+            ? 'text'
+            : undefined,
+      detailBaseSelector: String(current.detailBaseSelector ?? '').trim() || undefined,
+      customTransformCode:
+        String(current.customTransformCode ?? '').trim() || undefined,
+      parentLink: String(current.parentLink ?? '').trim() || undefined,
+      preActions: sanitizePreActions(current.preActions),
+    });
+
+    return result;
+  }, []);
+}
+
+function stripDetailBaseSelector(selectors: SelectorConfig[]): SelectorConfig[] {
+  return selectors.map((selector) => ({
+    ...selector,
+    parentLink: undefined,
+    detailBaseSelector: undefined,
+  }));
+}
+
+function sanitizeNestedContexts(contexts: unknown): NestedExtractContext[] {
+  if (!Array.isArray(contexts)) {
+    return [];
+  }
+
+  return contexts.reduce<NestedExtractContext[]>((result, context) => {
+    const current = (context || {}) as Partial<NestedExtractContext>;
+    const parentLink = String(current.parentLink ?? '').trim();
+    const baseSelector = String(current.baseSelector ?? '').trim();
+
+    if (!parentLink || !baseSelector) {
+      return result;
+    }
+
+    const sanitizedSelectors = stripDetailBaseSelector(
+      sanitizeSelectorConfigs(current.selectors),
+    ) as NestedSelectorConfig[];
+    const nextSelector = String(current.next?.selector ?? '').trim();
+    const nextMaxPages = normalizePositiveInt(current.next?.maxPages);
+    const maxDepth = normalizePositiveInt(current.maxDepth);
+    const maxScroll = normalizePositiveInt(current.scroll?.maxScroll);
+    const waitTime = normalizePositiveInt(current.scroll?.waitTime);
+    const maxItems = normalizePositiveInt(current.scroll?.maxItems);
+
+    result.push({
+      parentLink,
+      baseSelector,
+      listOutputKey: String(current.listOutputKey ?? '').trim() || undefined,
+      selectors: sanitizedSelectors,
+      maxDepth,
+      preActions: sanitizePreActions(current.preActions),
+      next:
+        nextSelector && nextMaxPages
+          ? {
+              selector: nextSelector,
+              maxPages: nextMaxPages,
+            }
+          : undefined,
+      scroll:
+        maxScroll && waitTime && maxItems
+          ? {
+              maxScroll,
+              waitTime,
+              maxItems,
+            }
+          : undefined,
+    });
+
+    return result;
+  }, []);
+}
+
+export function sanitizeBehaviorSteps(steps: unknown): BehaviorStep[] {
+  if (!Array.isArray(steps)) {
+    return [];
+  }
+
+  return steps.reduce<BehaviorStep[]>((result, step, index) => {
+    const sanitized = sanitizeBehaviorStep(step, index);
+    if (sanitized) {
+      result.push(sanitized);
+    }
+    return result;
+  }, []);
+}
+
+function sanitizeBehaviorStep(
+  step: unknown,
+  index: number,
+): BehaviorStep | null {
+  if (!step || typeof step !== 'object') {
+    return null;
+  }
+
+  const current = step as Record<string, unknown>;
+  const type = String(current.type || '').trim() as BehaviorStepType;
+  if (!BEHAVIOR_STEP_TYPES.includes(type)) {
+    return null;
+  }
+
+  const selector = String(current.selector ?? '').trim();
+  const name = String(current.name ?? '').trim();
+  const field = String(current.field ?? '').trim();
+  const url = String(current.url ?? '').trim();
+  const value = String(current.value ?? '').trim();
+  const waitUntil = String(current.waitUntil ?? '').trim();
+  const extractType = String(current.extractType ?? '').trim();
+  const attribute = String(current.attribute ?? '').trim();
+  const loopMode = String(current.loopMode ?? '').trim();
+  const outputKey = String(current.outputKey ?? '').trim();
+  const conditionType = String(current.conditionType ?? '').trim();
+  const conditionValue = String(current.conditionValue ?? '').trim();
+  const code = String(current.code ?? '').trim();
+  const timeout = Number(current.timeout);
+  const waitAfter = Number(current.waitAfter);
+  const maxLoops = Number(current.maxLoops);
+
+  return {
+    id: String(current.id ?? `${type}-${index + 1}`).trim() || `${type}-${index + 1}`,
+    name: name || undefined,
+    type,
+    selector: selector || undefined,
+    children: sanitizeBehaviorSteps(current.children),
+    elseChildren: sanitizeBehaviorSteps(current.elseChildren),
+    url: url || undefined,
+    value: value || undefined,
+    timeout: Number.isFinite(timeout) ? timeout : undefined,
+    waitUntil:
+      waitUntil === 'visible' ||
+      waitUntil === 'attached' ||
+      waitUntil === 'hidden' ||
+      waitUntil === 'networkidle' ||
+      waitUntil === 'timeout'
+        ? waitUntil
+        : type === 'wait'
+          ? 'visible'
+        : undefined,
+    waitAfter: Number.isFinite(waitAfter) ? waitAfter : undefined,
+    field: field || undefined,
+    extractType:
+      extractType === 'text' ||
+      extractType === 'html' ||
+      extractType === 'markdown' ||
+      extractType === 'link' ||
+      extractType === 'image' ||
+      extractType === 'attribute'
+        ? extractType
+        : undefined,
+    attribute: attribute || undefined,
+    loopMode:
+      loopMode === 'elements' || loopMode === 'times'
+        ? loopMode
+        : type === 'loop'
+          ? 'elements'
+        : undefined,
+    maxLoops:
+      Number.isFinite(maxLoops) && maxLoops > 0
+        ? Math.floor(maxLoops)
+        : undefined,
+    outputKey: outputKey || undefined,
+    conditionType:
+      conditionType === 'exists' ||
+      conditionType === 'not_exists' ||
+      conditionType === 'text_contains' ||
+      conditionType === 'customJS'
+        ? conditionType
+        : type === 'condition'
+          ? 'exists'
+        : undefined,
+    conditionValue: conditionValue || undefined,
+    code: code || undefined,
+  };
 }
 
 export function sanitizeResultFilters(rules: unknown): ResultFilterRule[] {
@@ -152,6 +475,15 @@ export function normalizeCookieDomain(
       .replace(/^\./, '')
       .toLowerCase();
   }
+}
+
+function normalizePositiveInt(value: unknown): number | undefined {
+  const numericValue = Number(value);
+  if (!Number.isInteger(numericValue) || numericValue <= 0) {
+    return undefined;
+  }
+
+  return numericValue;
 }
 
 export function getCookieMatchDomain(
@@ -351,6 +683,12 @@ function evaluateResultFilterFunction(
     return false;
   }
 
+  if (!isUnsafeCustomJsEnabled()) {
+    throw new Error(
+      'Custom JavaScript result filters are disabled by server policy.',
+    );
+  }
+
   try {
     const runner = new Function(
       'value',
@@ -440,6 +778,46 @@ function createResultFilterHelpers() {
       return 0;
     },
   };
+}
+
+function collectSelectorCustomJs(
+  selectors: unknown,
+  features: Set<string>,
+) {
+  if (!Array.isArray(selectors)) {
+    return;
+  }
+
+  if (
+    selectors.some((selector) =>
+      String((selector as SelectorConfig)?.customTransformCode ?? '').trim(),
+    )
+  ) {
+    features.add('字段自定义处理 JS');
+  }
+}
+
+function collectBehaviorCustomJs(
+  steps: unknown,
+  features: Set<string>,
+) {
+  if (!Array.isArray(steps)) {
+    return;
+  }
+
+  for (const step of steps as BehaviorStep[]) {
+    const code = String(step?.code ?? '').trim();
+
+    if (
+      (step?.type === 'customJS' && code) ||
+      (step?.conditionType === 'customJS' && code)
+    ) {
+      features.add('行为流自定义 JS');
+    }
+
+    collectBehaviorCustomJs(step?.children, features);
+    collectBehaviorCustomJs(step?.elseChildren, features);
+  }
 }
 
 function hasMeaningfulValue(value: unknown): boolean {

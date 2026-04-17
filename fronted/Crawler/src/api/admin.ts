@@ -1,12 +1,11 @@
-import request from './request';
+import request from "./request";
 
-// 用户管理相关的接口
 export interface UserItem {
   id: number;
   username: string;
   email: string;
-  role: 'user' | 'admin';
-  status: 'active' | 'disabled';
+  role: "user" | "admin";
+  status: "active" | "disabled";
   avatar?: string;
   createdAt: string;
   lastLoginAt?: string;
@@ -31,51 +30,45 @@ export interface CreateUserData {
   username: string;
   email: string;
   password: string;
-  role: 'user' | 'admin';
-  status: 'active' | 'disabled';
+  role: "user" | "admin";
+  status: "active" | "disabled";
 }
 
 export interface UpdateUserData {
   username?: string;
   email?: string;
-  role?: 'user' | 'admin';
-  status?: 'active' | 'disabled';
+  role?: "user" | "admin";
+  status?: "active" | "disabled";
 }
 
-export interface ApiResponse<T = any> {
-  statusCode: number;
-  message: string;
+export interface ApiResponse<T = unknown> {
+  statusCode?: number;
+  message?: string;
   data?: T;
 }
 
-// ==================== 用户管理 APIs ====================
-
-// 获取用户列表
 export function getUsersApi(params: GetUsersParams): Promise<UserListResponse> {
-  return request.get('/api/admin/users', { params });
+  return request.get("/api/admin/users", { params });
 }
 
-// 创建用户
-export function createUserApi(data: CreateUserData): Promise<ApiResponse<UserItem>> {
-  return request.post('/api/admin/users', data);
+export function createUserApi(data: CreateUserData): Promise<UserItem> {
+  return request.post("/api/admin/users", data);
 }
 
-// 更新用户
-export function updateUserApi(id: number, data: UpdateUserData): Promise<ApiResponse<UserItem>> {
+export function updateUserApi(
+  id: number,
+  data: UpdateUserData,
+): Promise<UserItem> {
   return request.put(`/api/admin/users/${id}`, data);
 }
 
-// 删除用户
-export function deleteUserApi(id: number): Promise<ApiResponse<void>> {
+export function deleteUserApi(id: number): Promise<void> {
   return request.delete(`/api/admin/users/${id}`);
 }
 
-// 切换用户状态
-export function toggleUserStatusApi(id: number): Promise<ApiResponse<UserItem>> {
+export function toggleUserStatusApi(id: number): Promise<UserItem> {
   return request.put(`/api/admin/users/${id}/toggle-status`);
 }
-
-// ==================== 任务监控 APIs ====================
 
 export interface TaskItem {
   id: number;
@@ -88,7 +81,7 @@ export interface TaskItem {
   user: {
     id: number;
     username: string;
-  };
+  } | null;
   executions?: Array<{
     id: number;
     status: string;
@@ -123,19 +116,15 @@ export interface TaskListResponse {
   totalPages: number;
 }
 
-// 获取任务列表
 export function getTasksApi(params: GetTasksParams): Promise<TaskListResponse> {
-  return request.get('/api/admin/tasks', { params });
+  return request.get("/api/admin/tasks", { params });
 }
 
-// 停止任务
-export function stopTaskApi(taskId: number): Promise<ApiResponse<void>> {
+export function stopTaskApi(taskId: number): Promise<void> {
   return request.put(`/api/admin/tasks/${taskId}/stop`);
 }
 
-// ==================== 系统日志 APIs ====================
-
-export type LogLevel = 'error' | 'warn' | 'info' | 'debug';
+export type LogLevel = "error" | "warn" | "info" | "debug";
 
 export interface LogEntry {
   id: number;
@@ -144,7 +133,7 @@ export interface LogEntry {
   module: string;
   user?: string;
   message: string;
-  details?: any;
+  details?: unknown;
 }
 
 export interface LogStats {
@@ -174,17 +163,17 @@ export interface LogListResponse {
   totalPages: number;
 }
 
-// 获取系统日志
 export function getLogsApi(params: GetLogsParams): Promise<LogListResponse> {
-  return request.get('/api/admin/logs', { params });
+  return request.get("/api/admin/logs", { params });
 }
 
-// 清空系统日志
-export function clearLogsApi(): Promise<ApiResponse<void>> {
-  return request.delete('/api/admin/logs');
+export function clearLogsApi(): Promise<void> {
+  return request.delete("/api/admin/logs");
 }
 
-// ==================== 系统设置 APIs ====================
+export type AnnouncementVariant = "info" | "success" | "warning";
+export type MaintenanceVariant = "info" | "success" | "warning" | "error";
+export type CleanupMode = "safe" | "standard" | "deep";
 
 export interface SystemSettings {
   basic: {
@@ -192,6 +181,16 @@ export interface SystemSettings {
     systemDescription: string;
     adminEmail: string;
     language: string;
+    announcementEnabled: boolean;
+    announcementTitle: string;
+    announcementContent: string;
+    announcementVariant: AnnouncementVariant;
+    maintenanceEnabled: boolean;
+    maintenanceTitle: string;
+    maintenanceContent: string;
+    maintenanceVariant: MaintenanceVariant;
+    maintenanceStartAt: string;
+    maintenanceEndAt: string;
   };
   crawler: {
     defaultConcurrency: number;
@@ -205,6 +204,7 @@ export interface SystemSettings {
     logRetentionDays: number;
     autoCleanup: boolean;
     cleanupTime: string;
+    cleanupMode: CleanupMode;
   };
   security: {
     minPasswordLength: number;
@@ -215,13 +215,13 @@ export interface SystemSettings {
   };
   email: {
     enableEmail: boolean;
-    smtpHost: string;
-    smtpPort: number;
-    smtpUsername: string;
-    smtpPassword: string;
-    smtpSSL: boolean;
-    fromEmail: string;
-    fromName: string;
+    smtpHost?: string;
+    smtpPort?: number;
+    smtpUsername?: string;
+    smtpPassword?: string;
+    smtpSSL?: boolean;
+    fromEmail?: string;
+    fromName?: string;
   };
 }
 
@@ -232,17 +232,46 @@ export interface SystemInfo {
   uptime: number;
 }
 
-// 获取系统设置
+export interface PlatformAnnouncement {
+  enabled: boolean;
+  title: string;
+  content: string;
+  variant: AnnouncementVariant;
+}
+
+export interface PlatformMaintenance {
+  enabled: boolean;
+  title: string;
+  content: string;
+  variant: MaintenanceVariant;
+  startAt?: string;
+  endAt?: string;
+}
+
+export interface PlatformInfo {
+  systemName: string;
+  systemDescription: string;
+  announcement: PlatformAnnouncement;
+  capabilities: {
+    unsafeCustomJsEnabled: boolean;
+  };
+  maintenance?: PlatformMaintenance;
+}
+
 export function getSystemSettingsApi(): Promise<SystemSettings> {
-  return request.get('/api/admin/settings');
+  return request.get("/api/admin/settings");
 }
 
-// 更新系统设置
-export function updateSystemSettingsApi(settings: SystemSettings): Promise<ApiResponse<SystemSettings>> {
-  return request.put('/api/admin/settings', settings);
+export function updateSystemSettingsApi(
+  settings: SystemSettings,
+): Promise<SystemSettings> {
+  return request.put("/api/admin/settings", settings);
 }
 
-// 获取系统信息
 export function getSystemInfoApi(): Promise<SystemInfo> {
-  return request.get('/api/admin/system-info');
+  return request.get("/api/admin/system-info");
+}
+
+export function getPlatformInfoApi(): Promise<PlatformInfo> {
+  return request.get("/api/platform/info");
 }

@@ -1,8 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { SystemSetting, SettingKey } from './entities/system-setting.entity';
-import { SystemSettingsDto } from './dto/system-settings.dto';
+import {
+  PlatformInfoDto,
+  SystemSettingsDto,
+} from './dto/system-settings.dto';
 
 @Injectable()
 export class SystemSettingsService {
@@ -12,6 +16,7 @@ export class SystemSettingsService {
   constructor(
     @InjectRepository(SystemSetting)
     private readonly settingRepository: Repository<SystemSetting>,
+    private readonly configService: ConfigService,
   ) {}
 
   /**
@@ -57,7 +62,7 @@ export class SystemSettingsService {
     settings.forEach(setting => {
       try {
         const parsedValue = JSON.parse(setting.value);
-        result[setting.key] = { ...result[setting.key], ...parsedValue };
+        result[setting.key] = this.normalizeSettingValue(setting.key, parsedValue);
       } catch (error) {
         this.logger.error(`解析设置 ${setting.key} 失败:`, error);
         // 如果解析失败，使用默认值
@@ -66,7 +71,10 @@ export class SystemSettingsService {
 
     // 更新缓存
     Object.entries(result).forEach(([key, value]) => {
-      this.settingsCache.set(key as SettingKey, value);
+      this.settingsCache.set(
+        key as SettingKey,
+        this.normalizeSettingValue(key as SettingKey, value),
+      );
     });
 
     return result;
@@ -78,7 +86,7 @@ export class SystemSettingsService {
   async getSetting(key: SettingKey): Promise<any> {
     // 先检查缓存
     if (this.settingsCache.has(key)) {
-      return this.settingsCache.get(key);
+      return this.normalizeSettingValue(key, this.settingsCache.get(key));
     }
 
     const setting = await this.settingRepository.findOne({
@@ -87,7 +95,7 @@ export class SystemSettingsService {
 
     if (setting) {
       try {
-        const parsedValue = JSON.parse(setting.value);
+        const parsedValue = this.normalizeSettingValue(key, JSON.parse(setting.value));
         this.settingsCache.set(key, parsedValue);
         return parsedValue;
       } catch (error) {
@@ -108,17 +116,19 @@ export class SystemSettingsService {
 
     for (const [key, value] of Object.entries(settings)) {
       if (value !== undefined) {
+        const normalizedValue = this.normalizeSettingValue(key as SettingKey, value);
         await this.settingRepository.upsert(
           {
             key: key as SettingKey,
-            value: JSON.stringify(value),
+            value: JSON.stringify(normalizedValue),
             description: this.getSettingDescription(key as SettingKey),
           },
           ['key']
         );
 
         // 更新缓存
-        this.settingsCache.set(key as SettingKey, value);
+        this.settingsCache.set(key as SettingKey, normalizedValue);
+        updatedSettings[key] = normalizedValue as never;
 
         this.logger.log(`更新系统设置: ${key}`);
       }
@@ -131,17 +141,18 @@ export class SystemSettingsService {
    * 更新单个设置
    */
   async updateSetting(key: SettingKey, value: any): Promise<void> {
+    const normalizedValue = this.normalizeSettingValue(key, value);
     await this.settingRepository.upsert(
       {
         key,
-        value: JSON.stringify(value),
+        value: JSON.stringify(normalizedValue),
         description: this.getSettingDescription(key),
       },
       ['key']
     );
 
     // 更新缓存
-    this.settingsCache.set(key, value);
+    this.settingsCache.set(key, normalizedValue);
 
     this.logger.log(`更新单个设置: ${key}`);
   }
@@ -204,6 +215,49 @@ export class SystemSettingsService {
    * 获取缓存的设置值
    */
   getCachedSetting(key: SettingKey): any {
-    return this.settingsCache.get(key);
+    return this.normalizeSettingValue(key, this.settingsCache.get(key));
+  }
+
+  async getPlatformInfo(): Promise<PlatformInfoDto> {
+    const basicSettings = this.normalizeSettingValue(
+      SettingKey.BASIC,
+      await this.getSetting(SettingKey.BASIC),
+    );
+
+    return {
+      systemName: String(basicSettings.systemName || 'Crawlee System'),
+      systemDescription: String(
+        basicSettings.systemDescription || '基于 Crawlee 的低代码爬虫平台',
+      ),
+      announcement: {
+        enabled: Boolean(basicSettings.announcementEnabled),
+        title: String(basicSettings.announcementTitle || '平台公告'),
+        content: String(basicSettings.announcementContent || ''),
+        variant: basicSettings.announcementVariant || 'info',
+      },
+      capabilities: {
+        unsafeCustomJsEnabled: Boolean(
+          this.configService.get('security.unsafeCustomJsEnabled'),
+        ),
+      },
+      maintenance: {
+        enabled: Boolean(basicSettings.maintenanceEnabled),
+        title: String(basicSettings.maintenanceTitle || '系统维护提醒'),
+        content: String(basicSettings.maintenanceContent || ''),
+        variant: basicSettings.maintenanceVariant || 'warning',
+        startAt: String(basicSettings.maintenanceStartAt || ''),
+        endAt: String(basicSettings.maintenanceEndAt || ''),
+      },
+    };
+  }
+
+  private normalizeSettingValue(key: SettingKey, value: any) {
+    const defaultValue = this.getDefaultSettings()[key];
+
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return { ...defaultValue, ...value };
+    }
+
+    return value ?? defaultValue;
   }
 }

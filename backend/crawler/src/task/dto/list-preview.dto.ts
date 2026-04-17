@@ -1,6 +1,7 @@
 import { IsUrl, IsString, IsOptional, IsNumber, Min } from 'class-validator';
+import { TaskDebugCookieDto } from './task-debug-cookie.dto';
 
-export class ListPreviewDto {
+export class ListPreviewDto extends TaskDebugCookieDto {
   @IsUrl()
   @IsString()
   url: string;

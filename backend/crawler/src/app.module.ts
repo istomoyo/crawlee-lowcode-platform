@@ -13,23 +13,20 @@ import { MulterModule } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import { join } from 'path';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
-import { APP_INTERCEPTOR } from '@nestjs/core';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
-import { APP_GUARD } from '@nestjs/core';
-
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { AdminModule } from './admin/admin.module';
 import { HealthModule } from './health/health.module';
 import configuration from './config/configuration';
+import { NotificationModule } from './notification/notification.module';
 
 @Module({
   imports: [
-    // 配置模块 - 必须最先导入
     ConfigModule.forRoot({
       load: [configuration],
       isGlobal: true,
     }),
-    // 数据库配置
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => ({
@@ -48,7 +45,6 @@ import configuration from './config/configuration';
       }),
       inject: [ConfigService],
     }),
-    // 速率限制
     ThrottlerModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => ({
@@ -70,6 +66,7 @@ import configuration from './config/configuration';
     AuthModule,
     AdminModule,
     HealthModule,
+    NotificationModule,
     MulterModule.register({
       storage: diskStorage({
         destination: join(__dirname, '..', 'upload'),
@@ -79,10 +76,9 @@ import configuration from './config/configuration';
         },
       }),
     }),
-    // 新增：静态目录，用于访问截图
     ServeStaticModule.forRoot({
-      rootPath: join(__dirname, '..', 'screenshots'), // 截图根目录
-      serveRoot: '/screenshots', // 前端访问前缀
+      rootPath: join(__dirname, '..', 'uploads', 'screenshots'),
+      serveRoot: '/screenshots',
     }),
   ],
   controllers: [AppController],

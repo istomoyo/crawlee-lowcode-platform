@@ -145,6 +145,7 @@
 import { ref, reactive, watch } from 'vue';
 import { xpathParseApi, jsPathParseApi, listPreviewApi } from '@/api/task';
 import { ElMessageBox, ElMessage } from 'element-plus';
+import { buildTaskCookiePayload, useTaskFormStore } from '@/stores/taskForm';
 
 export interface TreeNode {
   id: number;
@@ -169,6 +170,7 @@ const emit = defineEmits<{
 }>();
 
 let idSeed = 1;
+const store = useTaskFormStore();
 
 const editDialogVisible = ref(false);
 const editNode = ref<TreeNode>({} as TreeNode);
@@ -251,6 +253,7 @@ async function openAddChildDialog(node: TreeNode) {
       url: currentObjectUrl.value,
       targetAspectRatio,
       tolerance,
+      ...buildTaskCookiePayload(store.crawlerConfig),
     });
     listItems.splice(0, listItems.length, ...res);
   } catch (err) {
@@ -302,12 +305,14 @@ async function confirmAddChildNode() {
       res = await xpathParseApi({
         url: currentObjectUrl.value,
         xpath: selectedXpath.value,
+        ...buildTaskCookiePayload(store.crawlerConfig),
       });
     } else {
       if (!customJsPath.value) return;
       res = await jsPathParseApi({
         url: currentObjectUrl.value,
         jsPath: customJsPath.value,
+        ...buildTaskCookiePayload(store.crawlerConfig),
       });
     }
 
@@ -353,7 +358,7 @@ async function confirmAddChildNode() {
     closeAddChildDialog();
   } catch (err) {
     console.error(err);
-    ElMessage.error('解析子节点失败');
+    ElMessage.error(err instanceof Error ? err.message : '解析子节点失败');
   } finally {
     loading.value = false;
   }

@@ -164,7 +164,6 @@ import {
   type UserListResponse,
   type CreateUserData,
   type UpdateUserData,
-  type ApiResponse,
 } from '@/api/admin'
 
 // 响应式数据
@@ -319,12 +318,12 @@ const toggleUserStatus = async (user: UserItem) => {
       type: 'warning',
     })
 
-    const response: ApiResponse<UserItem> = await toggleUserStatusApi(user.id)
+    const response = await toggleUserStatusApi(user.id)
 
     // 更新本地数据
     const index = userList.value.findIndex(u => u.id === user.id)
     if (index !== -1) {
-      userList.value[index] = response.data!
+      userList.value[index] = response
     }
 
     ElMessage.success(`${action}成功`)
@@ -375,12 +374,12 @@ const submitUserForm = async () => {
         status: userForm.status,
       }
 
-      const response: ApiResponse<UserItem> = await updateUserApi(userForm.id!, updateData)
+      const response = await updateUserApi(userForm.id!, updateData)
 
       // 更新本地数据
       const index = userList.value.findIndex(u => u.id === userForm.id)
       if (index !== -1) {
-        userList.value[index] = response.data!
+        userList.value[index] = response
       }
 
       ElMessage.success('更新成功')
@@ -394,10 +393,10 @@ const submitUserForm = async () => {
         status: userForm.status,
       }
 
-      const response: ApiResponse<UserItem> = await createUserApi(createData)
+      const response = await createUserApi(createData)
 
       // 添加到列表
-      userList.value.unshift(response.data!)
+      userList.value.unshift(response)
       pagination.total++
 
       ElMessage.success('添加成功')

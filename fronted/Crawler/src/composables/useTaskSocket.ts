@@ -7,9 +7,38 @@ let socket: Socket | null = null;
 let reconnectTimer: number | null = null;
 let reconnectAttempts = 0;
 let syncInFlight = false;
+let terminalConnectErrorShown = false;
 
 const maxReconnectAttempts = 5;
 const reconnectDelay = 3000;
+
+type TaskPagination = {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+};
+
+type TaskStatusPayload = {
+  taskId: number;
+  taskName?: string;
+  taskUrl?: string;
+  status: string;
+  progress: number;
+  screenshotPath?: string | null;
+};
+
+type TaskExecutionPayload = {
+  taskId: number;
+  taskName?: string;
+  taskUrl?: string;
+  execution: TaskItem["latestExecution"];
+};
+
+type TaskSocketOptions<T extends TaskItem> = {
+  hydrateTask?: (task: TaskItem | T) => T;
+  progressThrottleMs?: number;
+};
 
 function resolveSocketNamespaceUrl(): string {
   const configuredBaseUrl = (
@@ -28,24 +57,158 @@ function resolveSocketNamespaceUrl(): string {
   return `${window.location.protocol}//${window.location.hostname}:3000/tasks`;
 }
 
-export function useTaskSocket(
-  taskList: Ref<TaskItem[]>,
-  pagination: Ref<{
-    page: number;
-    limit: number;
-    total: number;
-    totalPages: number;
-  }>,
-  fetchTaskList?: () => Promise<void>
+export function useTaskSocket<T extends TaskItem>(
+  taskList: Ref<T[]>,
+  pagination: Ref<TaskPagination>,
+  fetchTaskList?: () => Promise<void>,
+  options: TaskSocketOptions<T> = {},
 ) {
+  const progressThrottleMs = options.progressThrottleMs ?? 160;
+  const pendingStatusUpdates = new Map<number, TaskStatusPayload>();
+  const statusTimers = new Map<number, number>();
+  const lastAppliedProgressAt = new Map<number, number>();
+
+  const hydrateTask = (task: TaskItem | T): T => {
+    if (options.hydrateTask) {
+      return options.hydrateTask(task);
+    }
+
+    return task as T;
+  };
+
   const syncTaskList = async () => {
     if (!fetchTaskList || syncInFlight) return;
     syncInFlight = true;
+
     try {
       await fetchTaskList();
     } finally {
       syncInFlight = false;
     }
+  };
+
+  const replaceTaskItem = (
+    taskId: number,
+    updater: (currentTask: T) => TaskItem | T,
+  ) => {
+    const taskIndex = taskList.value.findIndex((task) => task.id === taskId);
+
+    if (taskIndex === -1) {
+      return false;
+    }
+
+    const currentTask = taskList.value[taskIndex];
+    if (!currentTask) {
+      return false;
+    }
+    const nextTask = hydrateTask(updater(currentTask));
+    const nextTaskList = taskList.value.slice();
+
+    nextTaskList[taskIndex] = nextTask;
+    taskList.value = nextTaskList;
+
+    return true;
+  };
+
+  const clearStatusTimer = (taskId: number) => {
+    const timer = statusTimers.get(taskId);
+    if (timer) {
+      clearTimeout(timer);
+      statusTimers.delete(taskId);
+    }
+  };
+
+  const applyTaskStatusUpdate = (payload: TaskStatusPayload) => {
+    const nextProgress = Math.max(0, Math.min(100, Number(payload.progress) || 0));
+    const found = replaceTaskItem(payload.taskId, (task) => ({
+      ...task,
+      status: payload.status as TaskItem["status"],
+      progress: nextProgress,
+      screenshotPath:
+        payload.screenshotPath !== undefined
+          ? payload.screenshotPath || undefined
+          : task.screenshotPath,
+      latestExecution: task.latestExecution
+        ? { ...task.latestExecution, status: payload.status }
+        : task.latestExecution,
+    }));
+
+    if (!found) {
+      void syncTaskList();
+      return;
+    }
+
+    if (payload.status === "success" || payload.status === "failed") {
+      void syncTaskList();
+    }
+  };
+
+  const flushTaskStatusUpdate = (taskId: number) => {
+    const pendingPayload = pendingStatusUpdates.get(taskId);
+    if (!pendingPayload) return;
+
+    pendingStatusUpdates.delete(taskId);
+    clearStatusTimer(taskId);
+    lastAppliedProgressAt.set(taskId, Date.now());
+    applyTaskStatusUpdate(pendingPayload);
+  };
+
+  const handleTaskStatusUpdate = (payload: TaskStatusPayload) => {
+    const isTransientStatus =
+      payload.status === "running" || payload.status === "stopping";
+
+    if (!isTransientStatus) {
+      pendingStatusUpdates.delete(payload.taskId);
+      clearStatusTimer(payload.taskId);
+      lastAppliedProgressAt.set(payload.taskId, Date.now());
+      applyTaskStatusUpdate(payload);
+      return;
+    }
+
+    const now = Date.now();
+    const lastAppliedAt = lastAppliedProgressAt.get(payload.taskId) ?? 0;
+    const remainingDelay = progressThrottleMs - (now - lastAppliedAt);
+
+    if (remainingDelay <= 0) {
+      lastAppliedProgressAt.set(payload.taskId, now);
+      applyTaskStatusUpdate(payload);
+      return;
+    }
+
+    pendingStatusUpdates.set(payload.taskId, payload);
+
+    if (statusTimers.has(payload.taskId)) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      statusTimers.delete(payload.taskId);
+      flushTaskStatusUpdate(payload.taskId);
+    }, remainingDelay);
+
+    statusTimers.set(payload.taskId, timer);
+  };
+
+  const handleTaskExecutionUpdate = (payload: TaskExecutionPayload) => {
+    const found = replaceTaskItem(payload.taskId, (task) => ({
+      ...task,
+      latestExecution: payload.execution
+        ? { ...payload.execution }
+        : payload.execution,
+      lastExecutionTime: payload.execution?.startTime ?? task.lastExecutionTime,
+    }));
+
+    if (!found) {
+      void syncTaskList();
+    }
+  };
+
+  const handleTaskCreated = () => {
+    void syncTaskList();
+  };
+
+  const handleTaskDeleted = () => {
+    void syncTaskList();
   };
 
   const connectWebSocket = () => {
@@ -55,10 +218,12 @@ export function useTaskSocket(
       socket = io(resolveSocketNamespaceUrl(), {
         transports: ["websocket", "polling"],
         reconnection: false,
+        withCredentials: true,
       });
 
       socket.on("connect", () => {
         reconnectAttempts = 0;
+        terminalConnectErrorShown = false;
         ElMessage.success("实时任务更新已连接");
       });
 
@@ -68,10 +233,10 @@ export function useTaskSocket(
             handleTaskStatusUpdate(data.payload);
             break;
           case "TASK_CREATED":
-            handleTaskCreated(data.payload);
+            handleTaskCreated();
             break;
           case "TASK_DELETED":
-            handleTaskDeleted(data.payload);
+            handleTaskDeleted();
             break;
           case "TASK_EXECUTION_UPDATE":
             handleTaskExecutionUpdate(data.payload);
@@ -90,7 +255,23 @@ export function useTaskSocket(
         }
       });
 
-      socket.on("connect_error", () => {
+      socket.on("connect_error", (error: Error) => {
+        const message = String(error?.message || "");
+        const isTerminalAuthError =
+          message.includes("Unauthorized") || message.includes("Forbidden origin");
+
+        if (isTerminalAuthError) {
+          if (!terminalConnectErrorShown) {
+            terminalConnectErrorShown = true;
+            ElMessage.warning(
+              message.includes("Forbidden origin")
+                ? "实时任务连接被当前来源地址拒绝"
+                : "实时任务连接鉴权失败，请重新登录",
+            );
+          }
+          return;
+        }
+
         if (reconnectAttempts < maxReconnectAttempts) {
           scheduleReconnect();
         }
@@ -117,81 +298,13 @@ export function useTaskSocket(
       reconnectTimer = null;
     }
 
+    statusTimers.forEach((timer) => clearTimeout(timer));
+    statusTimers.clear();
+    pendingStatusUpdates.clear();
+    lastAppliedProgressAt.clear();
+
     socket?.disconnect();
     socket = null;
-  };
-
-  const handleTaskStatusUpdate = (payload: {
-    taskId: number;
-    taskName?: string;
-    taskUrl?: string;
-    status: string;
-    progress: number;
-  }) => {
-    const taskIndex = taskList.value.findIndex((task) => task.id === payload.taskId);
-    const nextProgress = Math.max(0, Math.min(100, Number(payload.progress) || 0));
-
-    if (taskIndex !== -1) {
-      const task = taskList.value[taskIndex];
-      if (task) {
-        task.status = payload.status as TaskItem["status"];
-        task.progress = nextProgress;
-        if (task.latestExecution) {
-          task.latestExecution.status = payload.status;
-        }
-        taskList.value = [...taskList.value];
-      }
-
-      if (payload.status === "success" || payload.status === "failed") {
-        void syncTaskList();
-      }
-      return;
-    }
-
-    // 当前分页不存在该任务时，主动同步列表，避免“看起来不更新”
-    void syncTaskList();
-  };
-
-  const handleTaskCreated = (payload: TaskItem) => {
-    taskList.value.unshift(payload);
-    pagination.value.total++;
-    taskList.value = [...taskList.value];
-  };
-
-  const handleTaskDeleted = (payload: {
-    taskId: number;
-    taskName?: string;
-    taskUrl?: string;
-  }) => {
-    const taskIndex = taskList.value.findIndex((task) => task.id === payload.taskId);
-    if (taskIndex !== -1) {
-      taskList.value.splice(taskIndex, 1);
-      pagination.value.total--;
-      taskList.value = [...taskList.value];
-      return;
-    }
-
-    void syncTaskList();
-  };
-
-  const handleTaskExecutionUpdate = (payload: {
-    taskId: number;
-    taskName?: string;
-    taskUrl?: string;
-    execution: any;
-  }) => {
-    const taskIndex = taskList.value.findIndex((task) => task.id === payload.taskId);
-    if (taskIndex !== -1) {
-      const task = taskList.value[taskIndex];
-      if (task && payload.execution) {
-        task.latestExecution = payload.execution;
-        task.lastExecutionTime = payload.execution.startTime;
-        taskList.value = [...taskList.value];
-      }
-      return;
-    }
-
-    void syncTaskList();
   };
 
   return {

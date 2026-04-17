@@ -1,17 +1,25 @@
 import { Injectable, UnauthorizedException, Inject, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { Strategy, ExtractJwt } from 'passport-jwt';
 import Redis from 'ioredis';
+import { resolveJwtSecret } from '../config/runtime-security';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   private readonly logger = new Logger(JwtStrategy.name);
 
-  constructor(@Inject('REDIS_CLIENT') private redis: Redis) {
+  constructor(
+    @Inject('REDIS_CLIENT') private redis: Redis,
+    configService: ConfigService,
+  ) {
+    const jwtSecret =
+      configService.get<string>('jwt.secret') || resolveJwtSecret();
+
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: process.env.JWT_SECRET,
+      secretOrKey: jwtSecret,
     });
   }
 

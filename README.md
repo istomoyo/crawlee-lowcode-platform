@@ -1,331 +1,314 @@
 # Crawlee Low-Code Platform
 
-这是一个基于 `NestJS + TypeORM + MySQL + Redis + Crawlee + Playwright` 的低代码爬虫平台，前端使用 `Vue 3 + Vite + Pinia + Element Plus`。项目目标是让用户通过可视化配置完成页面结构识别、字段映射、抓取执行、结果导出和后台运维，而不是手写爬虫脚本。
+基于 `NestJS + TypeORM + MySQL + Redis + Crawlee + Playwright` 的低代码爬虫平台。
+前端使用 `Vue 3 + Vite + Pinia + Element Plus + Tailwind CSS`。
 
-当前根目录 `README.md` 作为项目现状说明的唯一主入口。根目录下其他说明文档仍保留，但存在内容重叠和过时风险，后续应逐步合并。
+当前仓库只保留项目根目录这一份 `README.md` 作为统一说明入口。
+本文按 `2026-04-09` 的代码状态整理。
 
-## 1. 当前项目已实现的能力
+## 项目目标
 
-### 1.1 账号与权限
+这个项目的目标不是让用户手写爬虫脚本，而是通过可视化方式完成：
 
-- 用户注册、登录、JWT 鉴权、Cookie 鉴权。
-- 普通用户与管理员角色区分。
-- 用户资料维护、头像上传、密码修改。
-- 登录状态校验和前端路由守卫。
+- 任务创建与编辑
+- 列表结构识别
+- 字段映射
+- 结果预览与执行
+- 结果筛选、下载与打包
+- 平台公告与通用配置
+- 管理后台运维
 
-### 1.2 任务配置与执行
+## 当前已实现的核心能力
 
-- 任务列表、任务创建、任务编辑、任务复制、任务删除。
-- 五步式任务配置流程：
-  1. 基本信息
-  2. 页面结构选择
-  3. 字段映射
-  4. 执行参数与结果筛选
-  5. 预览测试
-- 支持 XPath / JSPath / CSS 场景下的字段提取。
-- 支持文本、链接、图片、多级详情页、嵌套列表、分页、滚动加载。
-- 支持字段内容格式输出：
-  - `text`
-  - `html`
-  - `markdown`
-  - `smart`
-- 支持任务级预操作 `preActions`，用于点击、等待元素、等待超时等页面交互。
-- 支持 Cookie 注入、UA、自定义超时、并发、重试等执行参数。
+### 1. 账户与权限
 
-### 1.3 结果筛选与通知
+- 用户注册、登录、JWT 鉴权、会话校验
+- 普通用户 / 管理员角色区分
+- 用户资料维护、头像上传、密码修改
+- 前端路由守卫与登录态初始化
 
-- 结果筛选支持字段值比较模式：
+### 2. 任务配置与执行
+
+- 五步式任务配置流程
+  - 基本信息
+  - 页面结构选择
+  - 字段映射
+  - 执行参数配置
+  - JSON 预览与执行
+- 当前任务向导统一为 `XPath` 采集模式
+- 前端向导按结构选择、字段树、运行参数与 JSON 预览组织，不再保留浏览器行为流分支
+- 简单模式支持页面截图拾取元素并回填列表根 XPath
+- 支持文本、链接、图片、分页、滚动、详情页、嵌套列表
+- 支持 `text` / `html` / `markdown` / `smart` 内容格式
+- 支持页面前置动作 `preActions`
+- 支持 Cookie、并发、超时、重试等执行参数
+- 任务列表支持继续编辑、复制配置、快速执行、删除
+
+### 3. 详情页多结果与下载打包
+
+- 详情页子字段在单个 XPath 命中多个结果时，结果 JSON 会输出为数组
+- 打包下载模块可衔接数组型链接字段
+- 支持打包结果为 ZIP
+- 支持下载策略
+  - `direct`
+  - `browser`
+  - `auto`
+- 支持“先进入详情页，再触发下载”的页面化下载流程
+
+### 4. 结果筛选与通知
+
+- 字段级条件筛选
   - 判空
-  - 包含/不包含
-  - 等于/不等于
-  - 大于/大于等于
-  - 小于/小于等于
-- 结果筛选支持用户自定义 `bool` 函数：
-  - 每条规则可直接编写 `functionCode`
-  - 运行时传入 `value`、`item`、`field` 和 `helpers`
-  - 仅当所有规则都通过时，记录才保留
-- 支持任务成功/失败邮件通知。
-- 成功邮件支持附带部分结果预览，预览条数可配置。
+  - 相等 / 不等
+  - 包含 / 不包含
+  - 数值比较
+- 支持自定义筛选函数 `functionCode`
+- 支持任务成功 / 失败邮件通知
+- 支持通知中附带部分结果预览
 
-### 1.4 博客/文章类内容提取
+### 5. 任务模板
 
-- 后端增加了 HTML 内容清洗与格式化工具。
-- 当前实现基于：
-  - `jsdom`
-  - `turndown`
-  - 文章主内容启发式选择
-  - 样板区块剔除
-  - 相对资源地址绝对化
-- 能比原始纯文本提取更稳定地处理博客、文章、帖子类正文内容。
-- 目前属于“启发式增强版”，不是完整的第三方正文抽取引擎替代品。
+本轮新增：
 
-### 1.5 结果打包与下载
+- 后端新增任务模板实体与接口
+- 支持把已有任务保存为模板
+- 支持模板列表、模板详情、模板编辑、模板删除
+- 支持模板分类、分类筛选与分类复用
+- 前端任务列表新增“模板中心”
+- 支持将模板重新载入到任务向导中继续编辑
+- 任务编辑已接入配置回灌，不再只是占位按钮
+- 兼容历史上带 `config` 外壳的旧配置结构
 
-- 支持执行结果导出、ZIP 打包、图片/文件/文本分目录落盘。
-- 支持按字段模板自定义文件路径和命名。
-- 下载策略支持：
-  - `direct`：直接请求资源地址
-  - `browser`：使用浏览器页面内下载流程
-  - `auto`：直连失败后自动回退到浏览器下载
-- 浏览器下载已增强为真实页面行为，而不是简单 `fetch`：
-  - 页面内点击
-  - 打开新页
-  - 监听响应流
-  - 监听浏览器下载对象
-- 支持“先访问详情页再触发下载”的可选流程：
-  - 可配置详情页 URL 字段
-  - 可配置详情页稳定等待选择器
-  - 可配置等待超时
-- Pixiv 等有防盗链/Referer 校验的站点已做兼容处理。
-- 当前版本已移除代理相关配置和代理功能入口。
+### 6. 平台通用能力
 
-### 1.6 统计与后台管理
+- 平台公告配置与前台公告横幅
+- 系统名称 / 简介统一对外展示
+- 响应式基础布局与登录页视觉优化
+- 任务列表与后台页面的界面风格统一
 
-- 统计页已实现任务数量、执行情况和部分图表展示。
-- 管理后台已提供以下页面并具备基本功能：
-  - 用户管理
-  - 任务监控
-  - 系统日志
-  - 系统设置
-- 系统设置当前保留：
+### 7. 管理后台
+
+已可用页面：
+
+- 用户管理
+- 任务监控
+- 系统日志
+- 系统设置
+
+当前能力包括：
+
+- 用户查询、创建、编辑、删除、启用、禁用
+- 任务运行状态查看、最近执行记录查看、停止任务
+- 系统日志筛选、清空、前端导出
+- 系统设置维护
   - 基础信息
+  - 公告配置
   - 爬虫默认参数
-  - 存储清理参数
-  - 安全参数
+  - 存储清理策略
+  - 安全设置
   - 邮件参数
-- 系统日志支持查询、筛选、清空、前端导出。
-- 用户管理支持查询、创建、编辑、删除、启停。
 
-### 1.7 任务监控中的“停止任务”
+### 8. 操作日志与审计
 
-当前已经补到“真正的运行时中断”，不再只是数据库状态修改：
+本轮增强：
 
-- 管理台点击停止后，会优先请求运行中的 `CrawleeEngineService` 直接中断任务。
-- 运行中的 crawler 会触发 `teardown()`，并关闭详情页浏览器上下文。
-- 爬虫关键路径增加了停止检查，避免任务在停止请求后继续跑完整轮逻辑。
-- 仍保留基于任务状态轮询的 watcher 作为兜底，防止引擎状态与数据库状态意外失步。
-- 如果引擎实例异常未取到，后台会回退到直接标记失败，避免任务长期卡在运行中。
+- 任务模板的创建、更新、删除会写入统一系统日志
+- 管理后台日志页新增按模块筛选
+- 可直接筛选 `task-template` 模块追踪模板操作
 
-## 2. 主要实现方式
+## 技术栈
 
-### 2.1 后端
+### 后端
 
-核心目录：`backend/crawler/src`
+- NestJS 11
+- TypeORM
+- MySQL
+- Redis
+- Crawlee
+- Playwright
+- Swagger
+- Terminus
 
-- `auth`
-  - JWT、角色守卫、登录态控制
-- `user`
-  - 用户资料、头像、账户信息
-- `task`
-  - 任务创建、预览解析、执行调度、结果打包、下载策略、正文格式化
-- `execution`
-  - 执行记录与结果索引
-- `result`
-  - 结果读取与下载
-- `admin`
-  - 用户管理、任务监控、系统日志、系统设置
-- `mail`
-  - SMTP 发信
-- `health`
-  - 健康检查
+### 前端
 
-实现特点：
+- Vue 3
+- Vite
+- TypeScript
+- Pinia
+- Vue Router
+- Element Plus
+- Tailwind CSS
+- ECharts
 
-- 使用 `TypeORM` 管理任务、执行记录、系统设置、日志等实体。
-- 使用 `Crawlee + PlaywrightCrawler` 作为主要抓取引擎。
-- 使用 `Socket.IO` 推送任务状态更新。
-- 使用 `Swagger` 自动生成 API 文档。
-- 使用统一配置模块读取环境变量。
-- 通过 `task-config.utils.ts` 对历史配置进行兼容清洗，避免旧表单字段污染运行时配置。
+## 目录结构
 
-### 2.2 前端
+```text
+.
+├─ backend/
+│  └─ crawler/
+│     ├─ src/
+│     │  ├─ admin/
+│     │  ├─ auth/
+│     │  ├─ execution/
+│     │  ├─ health/
+│     │  ├─ mail/
+│     │  ├─ result/
+│     │  ├─ task/
+│     │  └─ user/
+│     └─ package.json
+├─ fronted/
+│  └─ Crawler/
+│     ├─ src/
+│     │  ├─ api/
+│     │  ├─ components/
+│     │  ├─ layouts/
+│     │  ├─ router/
+│     │  ├─ stores/
+│     │  └─ views/
+│     └─ package.json
+└─ README.md
+```
 
-核心目录：`fronted/Crawler/src`
+## 本地运行
 
-- `views/task-add`
-  - 任务向导式配置页
-- `views/admin`
-  - 用户管理、任务监控、系统日志、系统设置
-- `components/PackageConfigDialog.vue`
-  - 打包下载策略配置
-- `stores/taskForm.ts`
-  - 任务配置状态管理与归一化
-- `api`
-  - 前后端接口封装
-- `router`
-  - 登录态和管理员权限路由控制
+### 环境准备
 
-实现特点：
+- Node.js 20+
+- MySQL
+- Redis
 
-- 使用 `Pinia` 保持任务配置跨步骤共享。
-- 用 `Element Plus` 承载表单、表格、弹窗、分页等管理后台 UI。
-- 任务打包配置已支持自动模式、严格浏览器下载和详情页下载流程配置。
-- 路由中已对管理员页面进行权限限制。
-
-## 3. 当前已确认的页面实现情况
-
-### 已实现
-
-- 登录页
-- 用户资料页
-- 任务列表页
-- 统计页
-- 任务创建五步流程
-- 管理员用户管理页
-- 管理员任务监控页
-- 管理员系统日志页
-- 管理员系统设置页
-
-### 已实现但仍需继续打磨
-
-- 博客正文抽取更偏启发式方案，复杂站点命中率仍有提升空间。
-- 任务停止虽然已经是运行时中断，但前端交互提示还可以更细化，例如显示“已发送停止请求/正在中断”。
-- 系统日志导出是前端基于当前列表数据导出，不是后端异步归档导出。
-- 多个页面仍有中文乱码/编码历史问题，影响可维护性。
-
-## 4. 已发现的冗余和历史遗留
-
-### 4.1 明显冗余
-
-- `fronted/Crawler/src/stores/taskForm.ts`
-  - 存在一块旧版 `legacyCrawlerConfig` 配置，已经不参与当前真实配置流转。
-  - 本次已将其从运行逻辑中剔除，后续建议彻底删除这段历史代码并整理相关类型。
-
-### 4.2 文档冗余
-
-以下根目录文档与当前 README 有明显内容重叠：
-
-- `OPTIMIZATION_COMPLETE.md`
-- `OPTIMIZATION_RECOMMENDATIONS.md`
-- `OPTIMIZATION_SUMMARY.md`
-- `QUICK_START.md`
-
-此外还有多份子目录 README：
-
-- `backend/README.md`
-- `backend/crawler/README.md`
-- `fronted/README.md`
-- `fronted/Crawler/README.md`
-
-建议后续策略：
-
-- 根目录 README 保留为唯一“项目现状总览”
-- 子目录 README 只保留模块级补充说明
-- 旧优化文档改为归档目录或删除
-
-### 4.3 兼容性遗留
-
-- `task-config.utils.ts` 中保留了对旧字段的清洗逻辑，例如老的代理、旧 Step4 配置键等。
-- 这类代码短期内有价值，因为数据库里可能还存在历史任务配置。
-- 如果后续确认历史数据已迁移完，可以逐步删除这层兼容逻辑。
-
-## 5. 当前最值得继续优化的部分
-
-### 高优先级
-
-1. 修复全项目中文乱码和文件编码不一致问题。
-2. 为任务停止补充更明确的状态流转，例如 `stopping`，避免“已点击停止但列表仍短暂显示 running”的认知落差。
-3. 给关键链路补自动化测试：
-   - 任务执行
-   - 结果筛选函数
-   - 打包下载回退
-   - 邮件通知
-   - 管理员停止任务
-
-### 中优先级
-
-1. 引入更成熟的正文抽取方案作为博客内容增强的可选路径：
-   - Mozilla Readability
-   - Postlight Mercury 类方案
-2. 优化大包体积，继续拆分 `vendor-element-plus`、`vendor-echarts`。
-3. 将系统日志导出从前端导出升级为后端生成文件导出。
-4. 清理仍然存在的历史 dead code、注释噪音和重复说明文档。
-
-### 低优先级
-
-1. 统一英文/中文命名风格，例如 `fronted` 目录拼写、部分 `crawleer` 路由路径。
-2. 统一页面提示文案和日志文案。
-3. 补充更多管理员运维说明和部署说明。
-
-## 6. 运行方式
-
-### 6.1 后端
-
-工作目录：
+### 启动后端
 
 ```bash
 cd backend/crawler
+npm install
+npm run start:dev
 ```
 
 常用命令：
 
 ```bash
-npm install
-npm run start:dev
 npm run build
+npm test
 ```
 
-后端主要环境变量：
-
-- `PORT`
-- `DB_HOST`
-- `DB_PORT`
-- `DB_USER`
-- `DB_PASS`
-- `DB_NAME`
-- `REDIS_HOST`
-- `REDIS_PORT`
-- `REDIS_PASSWORD`
-- `JWT_SECRET`
-- `JWT_EXPIRES_IN`
-- `ALLOWED_ORIGINS`
-- `THROTTLE_TTL`
-- `THROTTLE_LIMIT`
-
-Swagger 文档默认地址：
-
-```text
-http://localhost:3000/api
-```
-
-### 6.2 前端
-
-工作目录：
+### 启动前端
 
 ```bash
 cd fronted/Crawler
+npm install
+npm run dev
 ```
 
 常用命令：
 
 ```bash
-npm install
-npm run dev
 npm run build
 ```
 
-默认开发地址通常为：
+### 默认访问地址
 
-```text
-http://localhost:5173
+- 前端开发地址：`http://localhost:5173`
+- 后端 Swagger：`http://localhost:3000/api`
+- 后端健康检查：`http://localhost:3000/health`
+
+## 最小环境变量
+
+请在 `backend/crawler` 目录下创建 `.env`，至少包含：
+
+```env
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=root
+DB_PASS=your_password
+DB_NAME=crawlee_lowcode
+
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=
+
+JWT_SECRET=your-super-secret-jwt-key
+JWT_EXPIRES_IN=86400
+
+PORT=3000
+NODE_ENV=development
+ALLOWED_ORIGINS=http://localhost:5173
+
+THROTTLE_TTL=60
+THROTTLE_LIMIT=100
 ```
 
-## 7. 本次核查结论
+可选常用项：
 
-- 管理后台的用户管理、任务监控、系统日志、系统设置页面都已经有实际功能，不是空壳页面。
-- 代理相关功能已从当前主流程移除。
-- 打包下载已经具备自动回退到浏览器下载，以及先访问详情页再下载的配置能力。
-- 任务结果筛选已经支持自定义布尔函数。
-- 任务通知邮件和结果预览能力已经落地。
-- 任务监控中的停止任务已经补成真正的运行时中断，而非纯状态修改。
-- 项目仍存在明显历史遗留，尤其是编码问题、冗余文档、部分旧配置兼容代码。
+```env
+MAX_FILE_SIZE=10485760
+UPLOAD_DEST=./uploads
+CRAWLER_MAX_CONCURRENCY=5
+CRAWLER_MAX_REQUESTS_PER_CRAWL=100
+CRAWLER_HEADLESS=true
+LOG_LEVEL=debug
+```
 
-## 8. 当前建议
+## 最近一次已验证通过
 
-如果继续迭代，建议优先按下面顺序推进：
+以下命令已在当前工作区通过：
 
-1. 统一编码和文案，先解决可维护性问题。
-2. 给停止任务、下载回退、邮件通知、结果筛选补测试。
-3. 引入成熟正文抽取算法，增强博客/文章站点稳定性。
-4. 收敛根目录与子目录的重复文档。
+```bash
+cd backend/crawler
+npm test -- task-template.service.spec.ts --runInBand
+npm run build
 
+cd ../../fronted/Crawler
+npm run build
+npm run test:smoke
+```
+
+## 当前仍建议继续优化的方向
+
+### 高优先级
+
+1. 继续清理存量乱码、历史注释噪音与文案不一致问题。
+2. 为任务模板、任务执行、打包下载补更多自动化测试。
+3. 继续收缩历史兼容逻辑与冗余代码。
+
+### 中优先级
+
+1. 给模板增加共享范围、团队模板或公共模板能力。
+2. 把日志导出升级为后端文件导出。
+3. 进一步优化前端大包体积，尤其是 `element-plus` 与 `echarts`。
+
+### 低优先级
+
+1. 统一部分目录与命名历史遗留，例如 `fronted` 拼写。
+2. 补充部署文档、运维文档与管理员使用手册。
+
+## 当前结论
+
+项目已经不是原型空壳，而是具备真实任务配置、执行、结果处理、下载打包、公告展示和后台管理能力的可运行系统。
+
+当前最值得继续投入的方向，不再是“有没有功能”，而是：
+
+- 提升代码可维护性
+- 提升测试覆盖率
+- 继续清理历史遗留
+- 在稳定基础上继续扩展平台通用能力
+
+## 2026-04 Frontend Notes
+
+- Frontend smoke tests are available in `fronted/Crawler` via `npm run test:smoke`.
+- Before running smoke tests:
+  - start the backend at `http://127.0.0.1:3000`
+  - start the frontend at `http://127.0.0.1:5173` or set `SMOKE_BASE_URL`
+  - copy `fronted/Crawler/.env.smoke.example` into your local shell environment
+  - provide `SMOKE_USER_EMAIL` and `SMOKE_USER_PASSWORD`
+- Current smoke coverage includes:
+  - Cookie credential center create, update, preview match, and delete flow
+  - task builder auto-suggest and one-click apply for saved Cookie credentials by domain
+- The sidebar now exposes a single task creation entry point:
+  - XPath oriented task creation
+- For simple list extraction, the top-level result count should follow the first-level list item count. Nested detail-page collections should stay attached to each parent item as array properties in the JSON result, and child arrays are not truncated by the top-level `maxItems` setting unless a nested limit is configured explicitly.
+- Backend regression coverage for this result-shape rule is available in `backend/crawler/src/task/crawlee-engine.service.spec.ts`.
+- User registration still requires email verification. The current flow is:
+  - request captcha
+  - send email code
+  - submit `/api/user/register` with the verification code

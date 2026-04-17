@@ -1,9 +1,9 @@
 <template>
   <el-card class="mt-6 p-4 flex flex-col h-full space-y-4">
     <div>
-      <h3 class="font-bold text-lg">最终配置</h3>
+      <h3 class="font-bold text-lg">运行配置</h3>
       <p class="text-sm text-gray-500">
-        设置任务运行参数、Cookie、结果筛选规则，以及执行完成后的邮件通知。
+        统一设置任务并发、请求节奏、访问凭证、结果过滤和通知策略。
       </p>
     </div>
 
@@ -60,71 +60,46 @@
         </el-form>
       </el-card>
 
-      <el-card shadow="never">
+      <el-card shadow="never" body-class="!pt-2">
         <template #header>
           <div class="flex items-center gap-2">
             <el-icon><Management /></el-icon>
-            <span>Cookie 设置</span>
+            <span>访问凭证</span>
           </div>
         </template>
 
-        <el-form :model="config" label-width="120px" class="space-y-4">
-          <el-form-item label="启用 Cookie">
-            <el-switch
-              v-model="config.useCookie"
-              active-text="启用"
-              inactive-text="关闭"
-            />
-            <span class="text-sm text-gray-500 ml-2">
-              详情页访问和后续打包下载都会复用这里配置的 Cookie
-            </span>
-          </el-form-item>
-
-          <template v-if="config.useCookie">
-            <el-form-item label="Cookie 内容">
-              <el-input
-                v-model="config.cookieString"
-                type="textarea"
-                :rows="4"
-                placeholder="例如：sessionid=abc123; token=xyz456"
-                class="font-mono text-sm"
-              />
-              <div class="text-xs text-gray-500 mt-1">
-                直接粘贴浏览器请求头中的整段 Cookie 即可，格式为
-                `name1=value1; name2=value2`
-              </div>
-            </el-form-item>
-
-            <el-form-item label="Cookie 域名">
-              <el-input
-                v-model="config.cookieDomain"
-                placeholder="留空时自动使用任务 URL 域名，例如 example.com"
-                class="font-mono"
-              />
-              <span class="text-xs text-gray-500 ml-2">
-                用于限制 Cookie 发送范围，资源打包下载时也会按这个域名匹配
-              </span>
-            </el-form-item>
-          </template>
-        </el-form>
+        <CookieAccessPanel
+          v-model="cookieAccessModel"
+          :task-url="store.form.url"
+          description="这里的访问凭证会参与任务运行。已保存凭证会写入任务配置；临时 Cookie 只在当前创建会话和本次运行里使用，不会落到任务或模板里。"
+          temporary-hint="临时 Cookie 适合当前任务创建阶段的预览和立即执行；如果已经在 Cookie 凭证页保存过同站点登录态，这里会优先自动匹配推荐。"
+        />
       </el-card>
 
       <el-card shadow="never">
         <template #header>
           <div class="flex items-center gap-2">
             <el-icon><DocumentCopy /></el-icon>
-            <span>结果筛选（字段值条件）</span>
+            <span>结果过滤</span>
           </div>
         </template>
 
         <div class="space-y-3">
+          <el-alert
+            v-if="!unsafeCustomJsEnabled"
+            type="warning"
+            :closable="false"
+            title="当前服务器已禁用结果过滤 JS"
+            description="目前只支持普通条件比较；已有 Bool 函数规则需要改回普通条件或删除后才能继续。"
+          />
+
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
               <div class="text-sm text-gray-600">
                 所有规则按 AND 生效，只有满足全部规则的记录才会被保留。
               </div>
               <div class="text-xs text-gray-500 mt-1">
-                支持普通比较模式，也支持为单个字段编写自定义 bool 函数。
+                支持普通比较模式，也支持为单个字段编写 Bool 函数。
               </div>
             </div>
             <el-button size="small" type="primary" @click="addResultFilter">
@@ -134,7 +109,7 @@
 
           <el-empty
             v-if="config.resultFilters.length === 0"
-            description="暂未添加筛选规则"
+            description="暂未添加过滤规则"
             :image-size="60"
           />
 
@@ -177,6 +152,7 @@
                       :key="option.value"
                       :label="option.label"
                       :value="option.value"
+                      :disabled="option.value === 'function' && !unsafeCustomJsEnabled && rule.mode !== 'function'"
                     />
                   </el-select>
                 </div>
@@ -208,15 +184,15 @@
                     v-else
                     class="h-8 px-3 rounded border border-dashed border-gray-300 text-xs text-gray-500 flex items-center"
                   >
-                    当前条件不需要填写比较值
+                    当前条件无需填写比较值
                   </div>
                 </div>
               </div>
 
               <div v-if="rule.mode === 'function'" class="space-y-2">
                 <div class="text-xs text-gray-500">
-                  可用参数：`value`、`item`、`field`、`helpers`。请在代码中
-                  `return true` 或 `return false`。
+                  可用参数：`value`、`item`、`field`、`helpers`。请在代码中 `return true`
+                  或 `return false`。
                 </div>
                 <el-input
                   v-model="rule.functionCode"
@@ -224,6 +200,7 @@
                   :rows="4"
                   class="font-mono text-xs"
                   placeholder="return helpers.hasValue(value) && helpers.toNumber(value) >= 10000;"
+                  :disabled="!unsafeCustomJsEnabled"
                 />
                 <div class="text-xs text-gray-500">
                   helpers 可用：`text()`、`toNumber()`、`hasValue()`、`includes()`、`matches()`、`length()`
@@ -249,7 +226,7 @@
         <template #header>
           <div class="flex items-center gap-2">
             <el-icon><Bell /></el-icon>
-            <span>任务结果邮件通知</span>
+            <span>任务结果通知</span>
           </div>
         </template>
 
@@ -261,7 +238,7 @@
               inactive-text="关闭"
             />
             <span class="text-sm text-gray-500 ml-2">
-              依赖系统设置中的 SMTP 配置，邮件发送给任务所属用户
+              依赖系统设置中的 SMTP 配置，邮件会发送给任务所属用户。
             </span>
           </el-form-item>
 
@@ -282,7 +259,7 @@
                 class="w-32"
               />
               <span class="text-sm text-gray-500 ml-2">
-                成功邮件中附带前 N 条结果预览，填 0 表示不附带预览
+                成功邮件中附带前 N 条结果预览，填 0 表示不附带预览。
               </span>
             </el-form-item>
           </template>
@@ -307,14 +284,23 @@ import {
   DocumentCopy,
   Bell,
 } from "@element-plus/icons-vue";
+import CookieAccessPanel from "@/components/task/CookieAccessPanel.vue";
+import { useCookieCredentials } from "@/composables/useCookieCredentials";
 import {
   useTaskFormStore,
   normalizeCrawlerConfig,
+  type CookieAccessMode,
   type ResultFilterMode,
   type ResultFilterOperator,
   type ResultFilterRule,
   type TaskNotificationConfig,
 } from "@/stores/taskForm";
+import {
+  findCookieCredentialById,
+  getCookieCredentialStatusMeta,
+  isCookieCredentialUsable,
+} from "@/utils/cookie-credential";
+import { usePlatformInfo } from "@/composables/usePlatformInfo";
 
 type Step4ConfigState = {
   maxConcurrency: number;
@@ -322,14 +308,21 @@ type Step4ConfigState = {
   timeout: number;
   maxRetries: number;
   useCookie: boolean;
+  cookieMode: CookieAccessMode;
   cookieString: string;
   cookieDomain: string;
+  cookieCredentialId: number | null;
   resultFilters: ResultFilterRule[];
   notification: TaskNotificationConfig;
 };
 
 const store = useTaskFormStore();
 const router = useRouter();
+const { platformInfo, fetchPlatformInfo } = usePlatformInfo();
+const { credentials, fetchCookieCredentials } = useCookieCredentials();
+const unsafeCustomJsEnabled = computed(
+  () => platformInfo.value?.capabilities?.unsafeCustomJsEnabled !== false,
+);
 
 let resultFilterIdSeed = 1;
 
@@ -339,14 +332,33 @@ const config = reactive<Step4ConfigState>({
   timeout: 60,
   maxRetries: 3,
   useCookie: false,
+  cookieMode: "temporary",
   cookieString: "",
   cookieDomain: "",
+  cookieCredentialId: null,
   resultFilters: [],
   notification: {
     enabled: false,
     onSuccess: true,
     onFailure: true,
     previewCount: 3,
+  },
+});
+
+const cookieAccessModel = computed({
+  get: () => ({
+    useCookie: config.useCookie,
+    cookieMode: config.cookieMode,
+    cookieString: config.cookieString,
+    cookieDomain: config.cookieDomain,
+    cookieCredentialId: config.cookieCredentialId,
+  }),
+  set: (value) => {
+    config.useCookie = value.useCookie;
+    config.cookieMode = value.cookieMode;
+    config.cookieString = value.cookieString;
+    config.cookieDomain = value.cookieDomain;
+    config.cookieCredentialId = value.cookieCredentialId;
   },
 });
 
@@ -387,6 +399,7 @@ const fieldNameOptions = computed(() => {
 });
 
 onMounted(() => {
+  void fetchPlatformInfo();
   const restored = normalizeCrawlerConfig(store.crawlerConfig as any);
 
   config.maxConcurrency = restored.maxConcurrency;
@@ -394,8 +407,10 @@ onMounted(() => {
   config.timeout = restored.timeout;
   config.maxRetries = restored.maxRetries;
   config.useCookie = restored.useCookie;
+  config.cookieMode = restored.cookieMode;
   config.cookieString = restored.cookieString;
   config.cookieDomain = restored.cookieDomain;
+  config.cookieCredentialId = restored.cookieCredentialId;
   config.resultFilters = restored.resultFilters.map((rule) => ({
     ...rule,
     mode: rule.mode || (rule.functionCode ? "function" : "operator"),
@@ -408,7 +423,19 @@ onMounted(() => {
     resultFilterIdSeed =
       Math.max(...config.resultFilters.map((rule) => rule.id || 0), 0) + 1;
   }
+
+  if (config.useCookie && config.cookieMode === "credential") {
+    void ensureCookieCredentialsLoaded();
+  }
 });
+
+async function ensureCookieCredentialsLoaded(force = false) {
+  try {
+    await fetchCookieCredentials(force);
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "加载 Cookie 凭证失败");
+  }
+}
 
 function needsValue(operator: ResultFilterOperator) {
   return operator !== "is_empty" && operator !== "is_not_empty";
@@ -432,9 +459,45 @@ function removeResultFilter(id: number) {
   }
 }
 
-function validateConfig() {
-  if (config.useCookie && !config.cookieString.trim()) {
-    ElMessage.error("启用 Cookie 后必须填写 Cookie 内容");
+async function validateConfig() {
+  if (config.useCookie) {
+    if (config.cookieMode === "credential" && !config.cookieCredentialId) {
+      ElMessage.error("请选择一个已保存的 Cookie 凭证");
+      return false;
+    }
+
+    if (config.cookieMode === "credential") {
+      await ensureCookieCredentialsLoaded();
+      const selectedCredential = findCookieCredentialById(
+        credentials.value,
+        config.cookieCredentialId,
+      );
+
+      if (!selectedCredential) {
+        ElMessage.error("所选 Cookie 凭证不存在，请重新选择");
+        return false;
+      }
+
+      if (!isCookieCredentialUsable(selectedCredential)) {
+        ElMessage.error(getCookieCredentialStatusMeta(selectedCredential).message);
+        return false;
+      }
+    }
+
+    if (config.cookieMode === "temporary" && !config.cookieString.trim()) {
+      ElMessage.error("启用临时 Cookie 后必须填写 Cookie 内容");
+      return false;
+    }
+  }
+
+  if (
+    !unsafeCustomJsEnabled.value &&
+    config.resultFilters.some(
+      (rule) =>
+        rule.mode === "function" && String(rule.functionCode ?? "").trim(),
+    )
+  ) {
+    ElMessage.error("当前服务器已禁用结果过滤 JS，请改为条件比较或删除该规则");
     return false;
   }
 
@@ -459,7 +522,7 @@ function validateConfig() {
   });
 
   if (invalidRule) {
-    ElMessage.error("结果筛选规则未填写完整，请检查字段、模式和规则内容");
+    ElMessage.error("结果过滤规则未填写完整，请检查字段、模式和规则内容");
     return false;
   }
 
@@ -468,7 +531,7 @@ function validateConfig() {
     !config.notification.onSuccess &&
     !config.notification.onFailure
   ) {
-    ElMessage.error("启用邮件通知后，至少选择成功或失败中的一种通知时机");
+    ElMessage.error("启用邮件通知后，至少选择一种通知时机");
     return false;
   }
 
@@ -508,13 +571,13 @@ function goBack() {
   router.push("/crawleer/task-add/mapping");
 }
 
-function goNext() {
-  if (!validateConfig()) {
+async function goNext() {
+  if (!(await validateConfig())) {
     return;
   }
 
   saveConfig();
-  router.push("/crawleer/task-add/preview");
+  await router.push("/crawleer/task-add/preview");
 }
 </script>
 

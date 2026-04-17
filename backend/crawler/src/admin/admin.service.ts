@@ -33,6 +33,7 @@ import {
   SystemInfoDto,
 } from './dto/system-settings.dto';
 import * as bcrypt from 'bcrypt';
+import { NotificationService } from '../notification/notification.service';
 
 @Injectable()
 export class AdminService {
@@ -50,6 +51,7 @@ export class AdminService {
     private readonly logRepository: Repository<SystemLog>,
     private readonly loggerService: LoggerService,
     private readonly systemSettingsService: SystemSettingsService,
+    private readonly notificationService: NotificationService,
     private readonly moduleRef: ModuleRef,
   ) {
     this.systemStartTime = new Date();
@@ -60,7 +62,7 @@ export class AdminService {
       return this.moduleRef.get(CrawleeEngineService, { strict: false });
     } catch (error) {
       this.logger.warn(
-        `Failed to resolve CrawleeEngineService: ${
+        `解析 CrawleeEngineService 失败: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -314,7 +316,7 @@ export class AdminService {
           id: task.id,
           name: task.name,
           url: task.url,
-          status: task.status,
+          status: lastExecution?.status || task.status,
           createdAt: task.createdAt,
           lastExecutionTime: lastExecution?.startTime,
           user: task.user ? {
@@ -335,7 +337,7 @@ export class AdminService {
     // 计算统计数据
     const stats: TaskStatsDto = {
       totalTasks: total,
-      runningTasks: tasks.filter(t => t.status === 'running').length,
+      runningTasks: tasks.filter(t => ['running', 'stopping'].includes(t.status)).length,
       successTasks: tasks.filter(t => t.status === 'success').length,
       failedTasks: tasks.filter(t => t.status === 'failed').length,
     };
@@ -364,10 +366,13 @@ export class AdminService {
     // 更新任务状态
     const crawlerEngine = this.getCrawleeEngineService();
     const stopResult = crawlerEngine
-      ? await crawlerEngine.requestTaskStop(taskId, 'Task stopped by administrator')
+      ? await crawlerEngine.requestTaskStop(taskId, '任务已由管理员停止')
       : 'not_found';
 
-    if (stopResult === 'not_found') {
+    if (stopResult === 'running') {
+      task.status = 'stopping';
+      await this.taskRepository.save(task);
+    } else if (stopResult === 'not_found') {
       task.status = 'failed';
       task.endTime = new Date();
       await this.taskRepository.save(task);
@@ -459,7 +464,9 @@ export class AdminService {
   }
 
   async updateSystemSettings(settings: SystemSettingsDto): Promise<SystemSettingsDto> {
+    const previousSettings = await this.systemSettingsService.getAllSettings();
     const updatedSettings = await this.systemSettingsService.updateSettings(settings);
+    await this.publishPlatformNotifications(previousSettings, updatedSettings);
     await this.loggerService.info('admin', '管理员更新了系统设置', { settings });
     return updatedSettings;
   }
@@ -473,5 +480,72 @@ export class AdminService {
       status: 'running',
       uptime,
     };
+  }
+
+  private async publishPlatformNotifications(
+    previousSettings: SystemSettingsDto,
+    updatedSettings: SystemSettingsDto,
+  ): Promise<void> {
+    const previousBasic = previousSettings.basic || ({} as NonNullable<SystemSettingsDto['basic']>);
+    const nextBasic = updatedSettings.basic || ({} as NonNullable<SystemSettingsDto['basic']>);
+
+    const announcementChanged =
+      previousBasic.announcementEnabled !== nextBasic.announcementEnabled ||
+      previousBasic.announcementTitle !== nextBasic.announcementTitle ||
+      previousBasic.announcementContent !== nextBasic.announcementContent ||
+      previousBasic.announcementVariant !== nextBasic.announcementVariant;
+
+    if (
+      announcementChanged &&
+      nextBasic.announcementEnabled &&
+      nextBasic.announcementContent?.trim()
+    ) {
+      await this.notificationService.createSystemNotificationForActiveUsers({
+        type: 'system-announcement',
+        level: nextBasic.announcementVariant || 'info',
+        title: nextBasic.announcementTitle || '平台公告',
+        content: nextBasic.announcementContent,
+        link: '/',
+        metadata: {
+          category: 'announcement',
+        },
+      });
+    }
+
+    const maintenanceChanged =
+      previousBasic.maintenanceEnabled !== nextBasic.maintenanceEnabled ||
+      previousBasic.maintenanceTitle !== nextBasic.maintenanceTitle ||
+      previousBasic.maintenanceContent !== nextBasic.maintenanceContent ||
+      previousBasic.maintenanceVariant !== nextBasic.maintenanceVariant ||
+      previousBasic.maintenanceStartAt !== nextBasic.maintenanceStartAt ||
+      previousBasic.maintenanceEndAt !== nextBasic.maintenanceEndAt;
+
+    if (
+      maintenanceChanged &&
+      nextBasic.maintenanceEnabled &&
+      nextBasic.maintenanceContent?.trim()
+    ) {
+      const scheduleSummary = [
+        nextBasic.maintenanceStartAt ? `开始：${nextBasic.maintenanceStartAt}` : '',
+        nextBasic.maintenanceEndAt ? `结束：${nextBasic.maintenanceEndAt}` : '',
+      ]
+        .filter(Boolean)
+        .join('，');
+
+      await this.notificationService.createSystemNotificationForActiveUsers({
+        type: 'maintenance',
+        level: nextBasic.maintenanceVariant || 'warning',
+        title: nextBasic.maintenanceTitle || '系统维护提醒',
+        content: scheduleSummary
+          ? `${nextBasic.maintenanceContent}\n${scheduleSummary}`
+          : nextBasic.maintenanceContent,
+        link: '/',
+        metadata: {
+          category: 'maintenance',
+          startAt: nextBasic.maintenanceStartAt || '',
+          endAt: nextBasic.maintenanceEndAt || '',
+        },
+      });
+    }
   }
 }

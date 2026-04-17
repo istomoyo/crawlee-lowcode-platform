@@ -1,4 +1,25 @@
-import { IsString, IsNumber, IsBoolean, IsOptional, Min, Max } from 'class-validator';
+import {
+  IsString,
+  IsNumber,
+  IsBoolean,
+  IsOptional,
+  Min,
+  Max,
+  IsIn,
+  Matches,
+} from 'class-validator';
+
+export const CLEANUP_MODES = ['safe', 'standard', 'deep'] as const;
+export type CleanupMode = (typeof CLEANUP_MODES)[number];
+export const ANNOUNCEMENT_VARIANTS = ['info', 'success', 'warning'] as const;
+export type AnnouncementVariant = (typeof ANNOUNCEMENT_VARIANTS)[number];
+export const MAINTENANCE_VARIANTS = [
+  'info',
+  'success',
+  'warning',
+  'error',
+] as const;
+export type MaintenanceVariant = (typeof MAINTENANCE_VARIANTS)[number];
 
 export class BasicSettingsDto {
   @IsString()
@@ -12,6 +33,44 @@ export class BasicSettingsDto {
 
   @IsString()
   language: string;
+
+  @IsBoolean()
+  announcementEnabled: boolean;
+
+  @IsOptional()
+  @IsString()
+  announcementTitle?: string;
+
+  @IsOptional()
+  @IsString()
+  announcementContent?: string;
+
+  @IsString()
+  @IsIn(ANNOUNCEMENT_VARIANTS)
+  announcementVariant: AnnouncementVariant;
+
+  @IsBoolean()
+  maintenanceEnabled: boolean;
+
+  @IsOptional()
+  @IsString()
+  maintenanceTitle?: string;
+
+  @IsOptional()
+  @IsString()
+  maintenanceContent?: string;
+
+  @IsString()
+  @IsIn(MAINTENANCE_VARIANTS)
+  maintenanceVariant: MaintenanceVariant;
+
+  @IsOptional()
+  @IsString()
+  maintenanceStartAt?: string;
+
+  @IsOptional()
+  @IsString()
+  maintenanceEndAt?: string;
 }
 
 export class CrawlerSettingsDto {
@@ -56,7 +115,12 @@ export class StorageSettingsDto {
   autoCleanup: boolean;
 
   @IsString()
+  @Matches(/^([01]\d|2[0-3]):([0-5]\d)$/)
   cleanupTime: string;
+
+  @IsString()
+  @IsIn(CLEANUP_MODES)
+  cleanupMode: CleanupMode;
 }
 
 export class SecuritySettingsDto {
@@ -124,6 +188,30 @@ export class SystemInfoDto {
   version: string;
   status: string;
   uptime: number;
+}
+
+export class PlatformAnnouncementDto {
+  enabled: boolean;
+  title: string;
+  content: string;
+  variant: AnnouncementVariant;
+}
+
+export class PlatformInfoDto {
+  systemName: string;
+  systemDescription: string;
+  announcement: PlatformAnnouncementDto;
+  capabilities: {
+    unsafeCustomJsEnabled: boolean;
+  };
+  maintenance?: {
+    enabled: boolean;
+    title: string;
+    content: string;
+    variant: MaintenanceVariant;
+    startAt?: string;
+    endAt?: string;
+  };
 }
 
 export class SystemSettingsDto {

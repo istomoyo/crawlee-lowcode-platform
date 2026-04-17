@@ -1,16 +1,23 @@
-// backend\crawler\src\task\task.gateway.ts
-
 import {
-  WebSocketGateway,
-  WebSocketServer,
-  SubscribeMessage,
-  OnGatewayConnection,
-  OnGatewayDisconnect,
   ConnectedSocket,
   MessageBody,
+  OnGatewayConnection,
+  OnGatewayDisconnect,
+  OnGatewayInit,
+  SubscribeMessage,
+  WebSocketGateway,
+  WebSocketServer,
 } from '@nestjs/websockets';
-import { Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { Inject, Logger, OnModuleDestroy } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { Server, Socket } from 'socket.io';
+import Redis from 'ioredis';
+import {
+  getAllowedCorsOrigins,
+  isOriginAllowed,
+  resolveAuthCookieConfig,
+} from '../config/runtime-security';
 
 interface TaskUpdatePayload {
   taskId: number;
@@ -18,93 +25,247 @@ interface TaskUpdatePayload {
   taskUrl?: string;
   status: string;
   progress: number;
+  screenshotPath?: string | null;
   execution?: any;
+}
+
+interface TaskSocketJwtPayload {
+  id: number;
+  email?: string;
+  role?: string;
+  loginToken?: string;
 }
 
 @WebSocketGateway({
   cors: {
-    origin: '*', // 在生产环境中应该更严格
+    origin: true,
+    credentials: true,
   },
-  namespace: '/tasks', // 使用 /ws/tasks 命名空间
+  namespace: '/tasks',
 })
-export class TaskGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class TaskGateway
+  implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect, OnModuleDestroy
+{
   @WebSocketServer()
   server: Server;
 
-  private logger = new Logger(TaskGateway.name);
-  private connectedClients = new Map<string, Socket>();
+  private readonly logger = new Logger(TaskGateway.name);
+  private readonly connectedClients = new Map<string, Socket>();
+  private readonly authCookieConfig = resolveAuthCookieConfig();
+
+  constructor(
+    private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
+    @Inject('REDIS_CLIENT') private readonly redis: Redis,
+  ) {}
+
+  afterInit(server: Server) {
+    server.use(async (client, next) => {
+      try {
+        const originHeader = client.handshake.headers.origin;
+        const origin = Array.isArray(originHeader)
+          ? originHeader[0]
+          : originHeader;
+        const allowedOrigins =
+          this.configService.get<string[]>('cors.origins') ||
+          getAllowedCorsOrigins();
+
+        if (!isOriginAllowed(origin, allowedOrigins)) {
+          this.logger.warn(
+            `Rejected task socket from origin: ${origin || 'unknown'}`,
+          );
+          return next(new Error('Forbidden origin'));
+        }
+
+        const token = this.extractAuthToken(client);
+        if (!token) {
+          return next(new Error('Unauthorized'));
+        }
+
+        const payload = await this.jwtService.verifyAsync<TaskSocketJwtPayload>(
+          token,
+          {
+            secret: this.configService.get<string>('jwt.secret'),
+          },
+        );
+
+        if (!payload?.id || !payload.loginToken) {
+          return next(new Error('Unauthorized'));
+        }
+
+        const latestLoginToken = await this.redis.get(`user:token:${payload.id}`);
+        if (!latestLoginToken || latestLoginToken !== payload.loginToken) {
+          return next(new Error('Unauthorized'));
+        }
+
+        client.data.userId = payload.id;
+        client.data.userEmail = payload.email;
+        client.data.userRole = payload.role;
+        next();
+      } catch (error) {
+        this.logger.warn(
+          `Rejected task socket connection: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        next(new Error('Unauthorized'));
+      }
+    });
+  }
 
   handleConnection(client: Socket) {
-    this.logger.log(`客户端连接: ${client.id}`);
-    this.connectedClients.set(client.id, client);
+    const userId = Number(client.data.userId);
+    if (!Number.isFinite(userId) || userId <= 0) {
+      client.disconnect(true);
+      return;
+    }
 
-    // 发送欢迎消息
+    client.join(this.getUserRoom(userId));
+    this.connectedClients.set(client.id, client);
+    this.logger.log(`Client connected: ${client.id}, userId: ${userId}`);
+
     client.emit('connected', {
-      message: 'WebSocket连接成功',
+      message: 'WebSocket connected',
       timestamp: new Date().toISOString(),
     });
   }
 
   handleDisconnect(client: Socket) {
-    this.logger.log(`客户端断开连接: ${client.id}`);
+    this.logger.log(`Client disconnected: ${client.id}`);
     this.connectedClients.delete(client.id);
   }
 
-  // 广播任务状态更新
-  broadcastTaskUpdate(update: TaskUpdatePayload) {
-    this.logger.log(`广播任务更新: ${JSON.stringify(update)}`);
-    this.server.emit('task_update', {
-      type: 'TASK_STATUS_UPDATE',
-      payload: update,
-      timestamp: new Date().toISOString(),
+  broadcastTaskUpdate(update: TaskUpdatePayload, userId?: number) {
+    if (!userId) {
+      this.logger.warn(
+        `Skipped task update broadcast for task ${update.taskId} because userId is missing`,
+      );
+      return;
+    }
+
+    this.logger.log(`Broadcast task update: ${JSON.stringify(update)}`);
+    this.emitToUser(userId, 'TASK_STATUS_UPDATE', update);
+  }
+
+  broadcastTaskCreated(task: any, userId?: number) {
+    if (!userId) {
+      this.logger.warn(
+        `Skipped task created broadcast for task ${task?.id ?? 'unknown'} because userId is missing`,
+      );
+      return;
+    }
+
+    this.logger.log(`Broadcast task created: ${task.id}`);
+    this.emitToUser(userId, 'TASK_CREATED', task);
+  }
+
+  broadcastTaskDeleted(
+    taskId: number,
+    taskName?: string,
+    taskUrl?: string,
+    userId?: number,
+  ) {
+    if (!userId) {
+      this.logger.warn(
+        `Skipped task deleted broadcast for task ${taskId} because userId is missing`,
+      );
+      return;
+    }
+
+    this.logger.log(`Broadcast task deleted: ${taskId}`);
+    this.emitToUser(userId, 'TASK_DELETED', { taskId, taskName, taskUrl });
+  }
+
+  broadcastTaskExecutionUpdate(
+    taskId: number,
+    execution: any,
+    taskName?: string,
+    taskUrl?: string,
+    userId?: number,
+  ) {
+    if (!userId) {
+      this.logger.warn(
+        `Skipped task execution broadcast for task ${taskId} because userId is missing`,
+      );
+      return;
+    }
+
+    this.logger.log(`Broadcast task execution update: ${taskId}`);
+    this.emitToUser(userId, 'TASK_EXECUTION_UPDATE', {
+      taskId,
+      taskName,
+      taskUrl,
+      execution,
     });
   }
 
-  // 广播新任务创建
-  broadcastTaskCreated(task: any) {
-    this.logger.log(`广播新任务创建: ${task.id}`);
-    this.server.emit('task_update', {
-      type: 'TASK_CREATED',
-      payload: task,
-      timestamp: new Date().toISOString(),
-    });
-  }
-
-  // 广播任务删除
-  broadcastTaskDeleted(taskId: number, taskName?: string, taskUrl?: string) {
-    this.logger.log(`广播任务删除: ${taskId}`);
-    this.server.emit('task_update', {
-      type: 'TASK_DELETED',
-      payload: { taskId, taskName, taskUrl },
-      timestamp: new Date().toISOString(),
-    });
-  }
-
-  // 广播任务执行更新
-  broadcastTaskExecutionUpdate(taskId: number, execution: any, taskName?: string, taskUrl?: string) {
-    this.logger.log(`广播任务执行更新: ${taskId}`);
-    this.server.emit('task_update', {
-      type: 'TASK_EXECUTION_UPDATE',
-      payload: { taskId, taskName, taskUrl, execution },
-      timestamp: new Date().toISOString(),
-    });
-  }
-
-  // 客户端订阅消息（可选）
   @SubscribeMessage('subscribe')
   handleSubscribe(
     @MessageBody() data: any,
     @ConnectedSocket() client: Socket,
   ) {
-    this.logger.log(`客户端 ${client.id} 订阅消息:`, data);
+    this.logger.log(`Client ${client.id} subscribed: ${JSON.stringify(data)}`);
     client.emit('subscribed', {
-      message: '订阅成功',
+      message: 'Subscribed successfully',
       timestamp: new Date().toISOString(),
     });
   }
 
-  // 获取连接的客户端数量
   getConnectedClientsCount(): number {
     return this.connectedClients.size;
+  }
+
+  onModuleDestroy() {
+    this.connectedClients.clear();
+  }
+
+  private getUserRoom(userId: number) {
+    return `user:${userId}`;
+  }
+
+  private emitToUser(
+    userId: number,
+    type:
+      | 'TASK_STATUS_UPDATE'
+      | 'TASK_CREATED'
+      | 'TASK_DELETED'
+      | 'TASK_EXECUTION_UPDATE',
+    payload: unknown,
+  ) {
+    this.server.to(this.getUserRoom(userId)).emit('task_update', {
+      type,
+      payload,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  private extractAuthToken(client: Socket): string | undefined {
+    const authToken =
+      typeof client.handshake.auth?.token === 'string'
+        ? client.handshake.auth.token.trim()
+        : '';
+    if (authToken) {
+      return authToken;
+    }
+
+    const cookieHeader = client.handshake.headers.cookie;
+    if (!cookieHeader) {
+      return undefined;
+    }
+
+    const tokenCookie = String(cookieHeader)
+      .split(';')
+      .map((part) => part.trim())
+      .find((part) =>
+        part.startsWith(`${this.authCookieConfig.name}=`),
+      );
+
+    if (!tokenCookie) {
+      return undefined;
+    }
+
+    return decodeURIComponent(
+      tokenCookie.slice(`${this.authCookieConfig.name}=`.length),
+    );
   }
 }

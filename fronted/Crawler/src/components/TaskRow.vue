@@ -173,6 +173,7 @@ import { computed, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Download, Document, CircleCheck, DataLine, InfoFilled, List, Box } from '@element-plus/icons-vue';
 import PackageConfigDialog from './PackageConfigDialog.vue';
+import { resolveApiResourceUrl } from '@/utils/api-url';
 
 interface Props {
   results: any[];
@@ -289,7 +290,10 @@ const handlePackageComplete = (packagePath: string) => {
 
 const downloadFile = (filePath: string) => {
   try {
-    const downloadUrl = `${import.meta.env.VITE_API_BASE_URL || "/api"}/${filePath}`;
+    const downloadUrl = resolveApiResourceUrl(filePath);
+    if (!downloadUrl) {
+      throw new Error("download url is empty");
+    }
     const fileName = filePath.split("/").pop() || "package.zip";
     
     const link = document.createElement("a");
@@ -310,7 +314,10 @@ const handleDownload = () => {
 
   try {
     // 构建下载URL
-    const downloadUrl = `${import.meta.env.VITE_API_BASE_URL || "/api"}/${props.resultPath}`;
+    const downloadUrl = resolveApiResourceUrl(props.resultPath);
+    if (!downloadUrl) {
+      throw new Error("download url is empty");
+    }
     const fileName = props.resultPath.split("/").pop() || (isZipFile.value ? "result.zip" : "result.json");
     
     // 对于ZIP文件，直接下载

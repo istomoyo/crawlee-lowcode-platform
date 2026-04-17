@@ -174,17 +174,9 @@ export class FilePackageService {
       return undefined;
     }
 
-    const value = item?.[fieldName];
-    if (typeof value !== 'string') {
-      return undefined;
-    }
-
-    const detailPageUrl = value.trim();
-    if (!/^https?:\/\//i.test(detailPageUrl)) {
-      return undefined;
-    }
-
-    return detailPageUrl;
+    return this.normalizeFieldValues(item?.[fieldName]).find((value) =>
+      this.isHttpUrl(value),
+    );
   }
 
   private createItemDownloadRequestContext(
@@ -230,6 +222,29 @@ export class FilePackageService {
     } catch {
       return 'about:blank';
     }
+  }
+
+  private normalizeFieldValues(value: unknown): string[] {
+    if (Array.isArray(value)) {
+      return value.flatMap((item) => this.normalizeFieldValues(item));
+    }
+
+    if (typeof value !== 'string') {
+      return [];
+    }
+
+    const normalized = value.trim();
+    return normalized ? [normalized] : [];
+  }
+
+  private isHttpUrl(value: string): boolean {
+    return /^https?:\/\//i.test(value);
+  }
+
+  private isLikelyImageUrl(value: string): boolean {
+    return /\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)(\?|@|#|$)/i.test(
+      value.toLowerCase(),
+    );
   }
 
   private async delay(ms: number): Promise<void> {
@@ -1041,11 +1056,13 @@ export class FilePackageService {
     index: number,
     fieldName?: string,
     timestamp?: string,
+    valueIndex?: number,
   ): string {
     let result = template;
 
     // 替换基础变量
     result = result.replace(/{index}/g, String(index + 1));
+    result = result.replace(/{valueIndex}/g, String((valueIndex ?? 0) + 1));
     result = result.replace(/{timestamp}/g, timestamp || Date.now().toString());
     result = result.replace(/{date}/g, new Date().toISOString().split('T')[0]);
 
@@ -1072,6 +1089,24 @@ export class FilePackageService {
 
     this.logger.debug(`路径模板解析: "${template}" -> "${result}"`);
     return result;
+  }
+
+  private applyValueIndexSuffix(
+    filePath: string,
+    valueIndex: number,
+    totalValues: number,
+    template: string,
+  ): string {
+    if (totalValues <= 1 || template.includes('{valueIndex}')) {
+      return filePath;
+    }
+
+    const extension = path.extname(filePath);
+    const basePath = extension
+      ? filePath.slice(0, -extension.length)
+      : filePath;
+
+    return `${basePath}_${valueIndex + 1}${extension}`;
   }
 
   /**
@@ -1123,29 +1158,22 @@ export class FilePackageService {
       for (const [key, value] of Object.entries(item)) {
         if (value === null || value === undefined || value === '') continue;
 
-        if (typeof value === 'string') {
-          // 检查是否是URL
-          if (value.startsWith('http://') || value.startsWith('https://')) {
-            // 检查是否是图片URL
-            // 支持多种格式：
-            // 1. 标准格式：.jpg, .png 等
-            // 2. 带查询参数：.jpg?xxx
-            // 3. 带@参数：.jpg@xxx（如B站图片URL）
-            // 4. 带锚点：.jpg#xxx
-            const lowerValue = value.toLowerCase();
-            // 改进的正则表达式，支持 @、?、# 和字符串结尾
-            if (lowerValue.match(/\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)(\?|@|#|$)/i)) {
-              imageFields.add(key);
-            } else {
-              // 可能是文件链接
-              fileFields.add(key);
-            }
+        const normalizedValues = this.normalizeFieldValues(value);
+        if (normalizedValues.length === 0) {
+          continue;
+        }
+
+        const urlValues = normalizedValues.filter((entry) => this.isHttpUrl(entry));
+        if (urlValues.length > 0) {
+          if (urlValues.some((entry) => this.isLikelyImageUrl(entry))) {
+            imageFields.add(key);
           } else {
-            // 普通文本
-            textFields.add(key);
+            fileFields.add(key);
           }
-        } else if (typeof value === 'string' && value.length > 50) {
-          // 长文本
+          continue;
+        }
+
+        if (normalizedValues.some((entry) => entry.length > 0)) {
           textFields.add(key);
         }
       }
@@ -1211,38 +1239,49 @@ export class FilePackageService {
         // 下载图片
         if (download.images !== false && imageFields.length > 0) {
           for (const fieldName of imageFields) {
-            const imageUrl = item[fieldName];
-            if (imageUrl && typeof imageUrl === 'string' && (imageUrl.startsWith('http://') || imageUrl.startsWith('https://'))) {
+            const imageUrls = this.normalizeFieldValues(item[fieldName]).filter((value) =>
+              this.isHttpUrl(value),
+            );
+            if (imageUrls.length > 0) {
               const imageTemplate = structure.images || 'images/{index}_{fieldName}.{ext}';
-              const ext = this.getFileExtension(imageUrl, 'jpg');
-              let imagePath = this.parsePathTemplate(imageTemplate, item, i, fieldName, timestamp);
-              // 如果模板中没有扩展名，添加扩展名
-              if (!path.extname(imagePath)) {
-                imagePath = `${imagePath}.${ext}`;
-              } else {
-                imagePath = imagePath.replace(/{ext}/g, ext);
-              }
-              
-              const fullImagePath = path.join(tempDir, imagePath);
-              const imageDownloadRequestContext =
-                this.createItemDownloadRequestContext(
-                  downloadRequestContext,
+              imageUrls.forEach((imageUrl, valueIndex) => {
+                const ext = this.getFileExtension(imageUrl, 'jpg');
+                let imagePath = this.parsePathTemplate(
+                  imageTemplate,
                   item,
+                  i,
+                  fieldName,
+                  timestamp,
+                  valueIndex,
                 );
-              
-              downloadTasks.push(
-                this.downloadResource(
-                  imageUrl,
-                  fullImagePath,
-                  maxFileSize,
-                  timeout,
-                  imageDownloadRequestContext,
-                ).then((success) => {
-                  if (success) {
-                    this.logger.log(`已下载图片: ${imagePath}`);
-                  }
-                }),
-              );
+                if (!path.extname(imagePath)) {
+                  imagePath = `${imagePath}.${ext}`;
+                } else {
+                  imagePath = imagePath.replace(/{ext}/g, ext);
+                }
+                imagePath = this.applyValueIndexSuffix(
+                  imagePath,
+                  valueIndex,
+                  imageUrls.length,
+                  imageTemplate,
+                );
+
+                const fullImagePath = path.join(tempDir, imagePath);
+
+                downloadTasks.push(
+                  this.downloadResource(
+                    imageUrl,
+                    fullImagePath,
+                    maxFileSize,
+                    timeout,
+                    itemDownloadRequestContext,
+                  ).then((success) => {
+                    if (success) {
+                      this.logger.log(`已下载图片: ${imagePath}`);
+                    }
+                  }),
+                );
+              });
             }
           }
         }
@@ -1250,38 +1289,49 @@ export class FilePackageService {
         // 下载文件（从fileFields）
         if (download.files !== false && fileFields.length > 0) {
           for (const fieldName of fileFields) {
-            const fileUrl = item[fieldName];
-            if (fileUrl && typeof fileUrl === 'string' && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'))) {
+            const fileUrls = this.normalizeFieldValues(item[fieldName]).filter((value) =>
+              this.isHttpUrl(value),
+            );
+            if (fileUrls.length > 0) {
               const fileTemplate = structure.files || 'files/{index}_{fieldName}.{ext}';
-              const ext = this.getFileExtension(fileUrl, 'bin');
-              let filePath = this.parsePathTemplate(fileTemplate, item, i, fieldName, timestamp);
-              // 如果模板中没有扩展名，添加扩展名
-              if (!path.extname(filePath)) {
-                filePath = `${filePath}.${ext}`;
-              } else {
-                filePath = filePath.replace(/{ext}/g, ext);
-              }
-              
-              const fullFilePath = path.join(tempDir, filePath);
-              const fileDownloadRequestContext =
-                this.createItemDownloadRequestContext(
-                  downloadRequestContext,
+              fileUrls.forEach((fileUrl, valueIndex) => {
+                const ext = this.getFileExtension(fileUrl, 'bin');
+                let filePath = this.parsePathTemplate(
+                  fileTemplate,
                   item,
+                  i,
+                  fieldName,
+                  timestamp,
+                  valueIndex,
                 );
-              
-              downloadTasks.push(
-                this.downloadResource(
-                  fileUrl,
-                  fullFilePath,
-                  maxFileSize,
-                  timeout,
-                  fileDownloadRequestContext,
-                ).then((success) => {
-                  if (success) {
-                    this.logger.log(`已下载文件: ${filePath}`);
-                  }
-                }),
-              );
+                if (!path.extname(filePath)) {
+                  filePath = `${filePath}.${ext}`;
+                } else {
+                  filePath = filePath.replace(/{ext}/g, ext);
+                }
+                filePath = this.applyValueIndexSuffix(
+                  filePath,
+                  valueIndex,
+                  fileUrls.length,
+                  fileTemplate,
+                );
+
+                const fullFilePath = path.join(tempDir, filePath);
+
+                downloadTasks.push(
+                  this.downloadResource(
+                    fileUrl,
+                    fullFilePath,
+                    maxFileSize,
+                    timeout,
+                    itemDownloadRequestContext,
+                  ).then((success) => {
+                    if (success) {
+                      this.logger.log(`已下载文件: ${filePath}`);
+                    }
+                  }),
+                );
+              });
             }
           }
         }
@@ -1289,8 +1339,13 @@ export class FilePackageService {
         // 保存文本为文件
         if (download.texts !== false && textFields.length > 0) {
           for (const fieldName of textFields) {
-            const textValue = item[fieldName];
-            if (textValue && typeof textValue === 'string' && textValue.trim()) {
+            const textValues = this.normalizeFieldValues(item[fieldName]).filter((value) =>
+              !this.isHttpUrl(value),
+            );
+            if (textValues.length > 0) {
+              const textValue = Array.isArray(item[fieldName])
+                ? textValues.join('\n\n')
+                : textValues[0];
               const textTemplate = structure.texts || 'texts/{index}_{fieldName}.txt';
               let textPath = this.parsePathTemplate(textTemplate, item, i, fieldName, timestamp);
               
@@ -1417,40 +1472,57 @@ export class FilePackageService {
       // 处理每个数据项
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
+        const itemDownloadRequestContext = this.createItemDownloadRequestContext(
+          downloadRequestContext,
+          item,
+        );
 
         // 下载图片
         if (download.images !== false && imageSelectors.length > 0) {
           for (const selector of imageSelectors) {
-            const imageUrl = item[selector.name];
-            if (imageUrl && typeof imageUrl === 'string' && (imageUrl.startsWith('http://') || imageUrl.startsWith('https://'))) {
+            const imageUrls = this.normalizeFieldValues(item[selector.name]).filter((value) =>
+              this.isHttpUrl(value),
+            );
+            if (imageUrls.length > 0) {
               const imageTemplate = structure.images || 'images/{index}_{fieldName}.{ext}';
-              const ext = this.getFileExtension(imageUrl, 'jpg');
-              let imagePath = this.parsePathTemplate(imageTemplate, item, i, selector.name, timestamp);
-              // 如果模板中没有扩展名，添加扩展名
-              if (!path.extname(imagePath)) {
-                imagePath = `${imagePath}.${ext}`;
-              } else {
-                imagePath = imagePath.replace(/{ext}/g, ext);
-              }
-              
-              const fullImagePath = path.join(tempDir, imagePath);
-              
-              downloadTasks.push(
-                this.downloadResource(
-                  imageUrl,
-                  fullImagePath,
-                  maxFileSize,
-                  timeout,
-                  this.createItemDownloadRequestContext(
-                    downloadRequestContext,
-                    item,
-                  ),
-                ).then((success) => {
-                  if (success) {
-                    this.logger.log(`已下载图片: ${imagePath}`);
-                  }
-                }),
-              );
+              imageUrls.forEach((imageUrl, valueIndex) => {
+                const ext = this.getFileExtension(imageUrl, 'jpg');
+                let imagePath = this.parsePathTemplate(
+                  imageTemplate,
+                  item,
+                  i,
+                  selector.name,
+                  timestamp,
+                  valueIndex,
+                );
+                if (!path.extname(imagePath)) {
+                  imagePath = `${imagePath}.${ext}`;
+                } else {
+                  imagePath = imagePath.replace(/{ext}/g, ext);
+                }
+                imagePath = this.applyValueIndexSuffix(
+                  imagePath,
+                  valueIndex,
+                  imageUrls.length,
+                  imageTemplate,
+                );
+
+                const fullImagePath = path.join(tempDir, imagePath);
+
+                downloadTasks.push(
+                  this.downloadResource(
+                    imageUrl,
+                    fullImagePath,
+                    maxFileSize,
+                    timeout,
+                    itemDownloadRequestContext,
+                  ).then((success) => {
+                    if (success) {
+                      this.logger.log(`已下载图片: ${imagePath}`);
+                    }
+                  }),
+                );
+              });
             }
           }
         }
@@ -1458,36 +1530,49 @@ export class FilePackageService {
         // 下载文件（从link字段）
         if (download.files !== false && linkSelectors.length > 0) {
           for (const selector of linkSelectors) {
-            const fileUrl = item[selector.name];
-            if (fileUrl && typeof fileUrl === 'string' && (fileUrl.startsWith('http://') || fileUrl.startsWith('https://'))) {
+            const fileUrls = this.normalizeFieldValues(item[selector.name]).filter((value) =>
+              this.isHttpUrl(value),
+            );
+            if (fileUrls.length > 0) {
               const fileTemplate = structure.files || 'files/{index}_{fieldName}.{ext}';
-              const ext = this.getFileExtension(fileUrl, 'bin');
-              let filePath = this.parsePathTemplate(fileTemplate, item, i, selector.name, timestamp);
-              // 如果模板中没有扩展名，添加扩展名
-              if (!path.extname(filePath)) {
-                filePath = `${filePath}.${ext}`;
-              } else {
-                filePath = filePath.replace(/{ext}/g, ext);
-              }
-              
-              const fullFilePath = path.join(tempDir, filePath);
-              
-              downloadTasks.push(
-                this.downloadResource(
-                  fileUrl,
-                  fullFilePath,
-                  maxFileSize,
-                  timeout,
-                  this.createItemDownloadRequestContext(
-                    downloadRequestContext,
-                    item,
-                  ),
-                ).then((success) => {
-                  if (success) {
-                    this.logger.log(`已下载文件: ${filePath}`);
-                  }
-                }),
-              );
+              fileUrls.forEach((fileUrl, valueIndex) => {
+                const ext = this.getFileExtension(fileUrl, 'bin');
+                let filePath = this.parsePathTemplate(
+                  fileTemplate,
+                  item,
+                  i,
+                  selector.name,
+                  timestamp,
+                  valueIndex,
+                );
+                if (!path.extname(filePath)) {
+                  filePath = `${filePath}.${ext}`;
+                } else {
+                  filePath = filePath.replace(/{ext}/g, ext);
+                }
+                filePath = this.applyValueIndexSuffix(
+                  filePath,
+                  valueIndex,
+                  fileUrls.length,
+                  fileTemplate,
+                );
+
+                const fullFilePath = path.join(tempDir, filePath);
+
+                downloadTasks.push(
+                  this.downloadResource(
+                    fileUrl,
+                    fullFilePath,
+                    maxFileSize,
+                    timeout,
+                    itemDownloadRequestContext,
+                  ).then((success) => {
+                    if (success) {
+                      this.logger.log(`已下载文件: ${filePath}`);
+                    }
+                  }),
+                );
+              });
             }
           }
         }
@@ -1495,8 +1580,13 @@ export class FilePackageService {
         // 保存文本为文件
         if (download.texts !== false && textSelectors.length > 0) {
           for (const selector of textSelectors) {
-            const textValue = item[selector.name];
-            if (textValue && typeof textValue === 'string' && textValue.trim()) {
+            const textValues = this.normalizeFieldValues(item[selector.name]).filter((value) =>
+              !this.isHttpUrl(value),
+            );
+            if (textValues.length > 0) {
+              const textValue = Array.isArray(item[selector.name])
+                ? textValues.join('\n\n')
+                : textValues[0];
               const textTemplate = structure.texts || 'texts/{index}_{fieldName}.txt';
               let textPath = this.parsePathTemplate(textTemplate, item, i, selector.name, timestamp);
               

@@ -1,78 +1,119 @@
 <template>
-  <div class="p-6 h-full flex flex-col">
-    <el-card class="max-w-4xl mx-auto w-full space-y-6">
-      <h2 class="text-lg font-bold mb-4">个人信息</h2>
+  <div v-loading="loadingProfile" class="page-shell">
+    <header class="page-header">
+      <div>
+        <h1 class="page-title">个人资料</h1>
+        <p class="page-description">统一管理头像、基础资料和账号安全设置，尽量把高频操作压缩到更直接的布局里。</p>
+      </div>
+    </header>
 
-      <div class="flex gap-10 items-start flex-wrap">
-        <!-- 头像 -->
-        <div class="flex flex-col items-center gap-3">
-          <el-tooltip content="点击更换头像" placement="bottom">
-            <div class="cursor-pointer" @click="openCropper">
-              <el-avatar :size="96" :src="avatarUrl">
-                {{ !avatarUrl ? form.username?.[0] : "" }}
-              </el-avatar>
-            </div>
-          </el-tooltip>
-          <span class="text-xs text-gray-500">点击头像更换</span>
+    <section class="surface-card profile-hero">
+      <div class="profile-hero__avatar">
+        <el-tooltip content="点击更换头像" placement="bottom">
+          <button type="button" class="profile-avatar-trigger" @click="openCropper">
+            <el-avatar :size="112" :src="avatarUrl">
+              {{ !avatarUrl ? profileInitial : "" }}
+            </el-avatar>
+          </button>
+        </el-tooltip>
+        <span class="text-xs text-slate-500">点击头像可重新上传和裁剪</span>
+      </div>
+
+      <div class="min-w-0 flex-1">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="inline-chip">{{ form.role === "admin" ? "管理员" : "普通成员" }}</span>
+          <span class="inline-chip">账号 ID {{ form.id || "--" }}</span>
         </div>
 
-        <!-- 基本信息 -->
-        <div class="flex-1 min-w-[260px] space-y-6">
-          <el-card shadow="never">
-            <h3 class="font-bold mb-3 text-sm">基本信息</h3>
-            <el-form :model="form" label-width="80px" class="max-w-md">
-              <el-form-item label="邮箱">
-                <el-input v-model="form.email" disabled />
-              </el-form-item>
-              <el-form-item label="用户名">
-                <el-input v-model="form.username" />
-              </el-form-item>
-              <el-form-item>
-                <el-button
-                  type="primary"
-                  :loading="savingProfile"
-                  @click="saveProfile"
-                >
-                  保存资料
-                </el-button>
-              </el-form-item>
-            </el-form>
-          </el-card>
+        <h2 class="mt-4 text-2xl font-extrabold tracking-tight text-slate-900">
+          {{ form.username || "未命名用户" }}
+        </h2>
+        <p class="mt-2 text-sm leading-6 text-slate-600">{{ form.email || "--" }}</p>
 
-          <!-- 修改密码 -->
-          <el-card shadow="never">
-            <h3 class="font-bold mb-3 text-sm">修改密码</h3>
-            <el-form :model="pwdForm" label-width="80px" class="max-w-md">
-              <el-form-item label="旧密码">
-                <el-input v-model="pwdForm.oldPassword" type="password" />
-              </el-form-item>
-              <el-form-item label="新密码">
-                <el-input v-model="pwdForm.newPassword" type="password" />
-              </el-form-item>
-              <el-form-item label="确认密码">
-                <el-input v-model="pwdForm.confirmPassword" type="password" />
-              </el-form-item>
-              <el-form-item>
-                <el-button
-                  type="primary"
-                  :loading="savingPassword"
-                  @click="savePassword"
-                >
-                  修改密码
-                </el-button>
-              </el-form-item>
-            </el-form>
-          </el-card>
+        <div class="profile-stats mt-5">
+          <div class="toolbar-card p-4">
+            <p class="metric-label">登录邮箱</p>
+            <p class="detail-value">{{ form.email || "--" }}</p>
+          </div>
+          <div class="toolbar-card p-4">
+            <p class="metric-label">头像状态</p>
+            <p class="detail-value">{{ avatarUrl ? "已设置自定义头像" : "使用默认头像" }}</p>
+          </div>
+          <div class="toolbar-card p-4">
+            <p class="metric-label">安全提醒</p>
+            <p class="detail-value">建议定期更换密码并避免复用。</p>
+          </div>
         </div>
       </div>
-    </el-card>
+    </section>
 
-    <!-- 裁剪弹窗 -->
-    <el-dialog v-model="cropDialogVisible" title="更换头像" width="600px">
-      <div class="space-y-4">
-        <el-button type="primary" @click="fileInput?.click()">
-          选择图片
-        </el-button>
+    <section class="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+      <article class="surface-card p-5 sm:p-6">
+        <div class="page-header">
+          <div>
+            <h2 class="section-title">基础资料</h2>
+            <p class="section-description">邮箱保持只读，用户名与头像可直接在当前页更新。</p>
+          </div>
+        </div>
+
+        <el-form :model="form" label-position="top" class="mt-5 grid gap-4">
+          <div class="profile-form-grid">
+            <el-form-item label="邮箱">
+              <el-input v-model="form.email" disabled />
+            </el-form-item>
+            <el-form-item label="用户名">
+              <el-input v-model="form.username" />
+            </el-form-item>
+          </div>
+
+          <div class="flex flex-wrap justify-end gap-2">
+            <el-button plain @click="openCropper">更换头像</el-button>
+            <el-button type="primary" :loading="savingProfile" @click="saveProfile">保存资料</el-button>
+          </div>
+        </el-form>
+      </article>
+
+      <article class="surface-card p-5 sm:p-6">
+        <div class="page-header">
+          <div>
+            <h2 class="section-title">修改密码</h2>
+            <p class="section-description">保留现有密码接口，桌面端改成更紧凑的双列布局。</p>
+          </div>
+        </div>
+
+        <el-form :model="pwdForm" label-position="top" class="mt-5 grid gap-4">
+          <div class="profile-form-grid">
+            <el-form-item label="旧密码">
+              <el-input v-model="pwdForm.oldPassword" type="password" show-password />
+            </el-form-item>
+            <el-form-item label="新密码">
+              <el-input v-model="pwdForm.newPassword" type="password" show-password />
+            </el-form-item>
+          </div>
+
+          <el-form-item label="确认新密码">
+            <el-input v-model="pwdForm.confirmPassword" type="password" show-password />
+          </el-form-item>
+
+          <div class="toolbar-card p-4">
+            <p class="detail-label">密码建议</p>
+            <p class="detail-value">至少使用 8 位以上组合密码，并避免和其他系统共用。</p>
+          </div>
+
+          <div class="flex justify-end">
+            <el-button type="primary" :loading="savingPassword" @click="savePassword">修改密码</el-button>
+          </div>
+        </el-form>
+      </article>
+    </section>
+
+    <el-dialog v-model="cropDialogVisible" title="更换头像" width="min(92vw, 680px)">
+      <div class="grid gap-4">
+        <div class="flex flex-wrap gap-2">
+          <el-button type="primary" @click="fileInput?.click()">选择图片</el-button>
+          <el-button plain @click="closeCropDialog">清空</el-button>
+        </div>
+
         <input
           ref="fileInput"
           type="file"
@@ -81,19 +122,14 @@
           @change="onFileChange"
         />
 
-        <div
-          class="border rounded bg-gray-50 relative w-full min-h-[300px] overflow-hidden flex"
-        >
+        <div class="profile-cropper-shell">
           <img
             v-if="imageUrl"
             ref="cropperImg"
             :src="imageUrl"
-            class="w-full h-full flex-1"
+            class="h-full w-full flex-1"
           />
-          <span
-            v-else
-            class="absolute inset-0 flex items-center justify-center text-gray-400"
-          >
+          <span v-else class="absolute inset-0 flex items-center justify-center text-slate-400">
             请先选择图片
           </span>
         </div>
@@ -101,85 +137,76 @@
 
       <template #footer>
         <el-button @click="closeCropDialog">取消</el-button>
-        <el-button
-          type="primary"
-          :loading="savingAvatar"
-          @click="saveCroppedAvatar"
-        >
-          保存头像
-        </el-button>
+        <el-button type="primary" :loading="savingAvatar" @click="saveCroppedAvatar">保存头像</el-button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, nextTick, computed } from "vue";
+import { computed, nextTick, onMounted, reactive, ref } from "vue";
 import Cropper from "cropperjs";
 import { ElMessage } from "element-plus";
 import { useUserStore } from "@/stores/user";
 import {
+  changePasswordApi,
   getUserInfoApi,
   updateUserProfileApi,
   uploadAvatarApi,
-  changePasswordApi,
   type UserInfo,
 } from "@/api/user";
 import { getAvatarUrl } from "@/utils/avatar";
 
-/* ================= 用户信息 ================= */
-
 const userStore = useUserStore();
+const loadingProfile = ref(false);
 
 const form = reactive<Partial<UserInfo>>({
+  id: 0,
   email: "",
   username: "",
   avatar: "",
+  role: "",
 });
 
 const previewAvatar = ref("");
 const savingProfile = ref(false);
-
-// 计算完整的头像 URL
 const avatarUrl = computed(() => getAvatarUrl(previewAvatar.value));
-
-/* ================= 修改密码 ================= */
+const profileInitial = computed(() => form.username?.slice(0, 1).toUpperCase() || "U");
 
 const pwdForm = reactive({
   oldPassword: "",
   newPassword: "",
   confirmPassword: "",
 });
-
 const savingPassword = ref(false);
-
-/* ================= 裁剪相关 ================= */
 
 const cropDialogVisible = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
 const cropperImg = ref<HTMLImageElement | null>(null);
 const imageUrl = ref("");
-
-let cropper: Cropper | null = null;
 const savingAvatar = ref(false);
+let cropper: Cropper | null = null;
 
-/* ================= 初始化 ================= */
-
-onMounted(loadProfile);
+onMounted(() => {
+  void loadProfile();
+});
 
 async function loadProfile() {
   try {
+    loadingProfile.value = true;
     const info = await getUserInfoApi();
+    form.id = info.id;
     form.email = info.email;
     form.username = info.username;
     form.avatar = info.avatar;
+    form.role = info.role;
     previewAvatar.value = info.avatar || "";
   } catch {
     ElMessage.error("获取用户信息失败");
+  } finally {
+    loadingProfile.value = false;
   }
 }
-
-/* ================= 裁剪逻辑 ================= */
 
 function openCropper() {
   cropDialogVisible.value = true;
@@ -193,19 +220,31 @@ function closeCropDialog() {
     cropper = null;
   }
 
-  if (imageUrl.value) URL.revokeObjectURL(imageUrl.value);
+  if (imageUrl.value) {
+    URL.revokeObjectURL(imageUrl.value);
+  }
   imageUrl.value = "";
+
+  if (fileInput.value) {
+    fileInput.value.value = "";
+  }
 }
 
-function onFileChange(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0];
-  if (!file) return;
+function onFileChange(event: Event) {
+  const file = (event.target as HTMLInputElement).files?.[0];
+  if (!file) {
+    return;
+  }
 
-  if (imageUrl.value) URL.revokeObjectURL(imageUrl.value);
+  if (imageUrl.value) {
+    URL.revokeObjectURL(imageUrl.value);
+  }
   imageUrl.value = URL.createObjectURL(file);
 
   nextTick(() => {
-    if (!cropperImg.value) return;
+    if (!cropperImg.value) {
+      return;
+    }
 
     if (cropper) {
       cropper.destroy();
@@ -215,7 +254,7 @@ function onFileChange(e: Event) {
     cropper = new Cropper(cropperImg.value, {
       aspectRatio: 1,
       viewMode: 1,
-      autoCropArea: 0.8,
+      autoCropArea: 0.82,
       background: false,
       responsive: true,
       dragMode: "crop",
@@ -232,23 +271,20 @@ async function saveCroppedAvatar() {
 
   savingAvatar.value = true;
   try {
-    const canvas = cropper.getCroppedCanvas({
-      width: 256,
-      height: 256,
+    const canvas = cropper.getCroppedCanvas({ width: 256, height: 256 });
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, "image/png");
     });
 
-    const blob: Blob | null = await new Promise((resolve) =>
-      canvas.toBlob(resolve, "image/png")
-    );
-
-    if (!blob) throw new Error();
+    if (!blob) {
+      throw new Error("头像裁剪失败");
+    }
 
     const file = new File([blob], "avatar.png", { type: "image/png" });
     const updated = await uploadAvatarApi(file);
-
     previewAvatar.value = updated.avatar ?? "";
+    form.avatar = updated.avatar;
     await userStore.fetchUserInfo();
-
     ElMessage.success("头像已更新");
     closeCropDialog();
   } catch {
@@ -258,16 +294,15 @@ async function saveCroppedAvatar() {
   }
 }
 
-/* ================= 保存资料 ================= */
-
 async function saveProfile() {
-  if (!form.username) {
+  if (!form.username?.trim()) {
     ElMessage.warning("用户名不能为空");
     return;
   }
+
   savingProfile.value = true;
   try {
-    await updateUserProfileApi({ username: form.username });
+    await updateUserProfileApi({ username: form.username.trim() });
     await userStore.fetchUserInfo();
     ElMessage.success("资料已更新");
   } catch {
@@ -277,14 +312,8 @@ async function saveProfile() {
   }
 }
 
-/* ================= 修改密码 ================= */
-
 async function savePassword() {
-  if (
-    !pwdForm.oldPassword ||
-    !pwdForm.newPassword ||
-    !pwdForm.confirmPassword
-  ) {
+  if (!pwdForm.oldPassword || !pwdForm.newPassword || !pwdForm.confirmPassword) {
     ElMessage.warning("请填写完整密码信息");
     return;
   }
@@ -301,8 +330,77 @@ async function savePassword() {
     pwdForm.oldPassword = "";
     pwdForm.newPassword = "";
     pwdForm.confirmPassword = "";
+  } catch {
+    ElMessage.error("修改密码失败");
   } finally {
     savingPassword.value = false;
   }
 }
 </script>
+
+<style scoped>
+.profile-hero {
+  display: grid;
+  gap: 1.25rem;
+  padding: 1.5rem;
+  background:
+    radial-gradient(circle at top right, rgba(12, 92, 171, 0.12), transparent 30%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.96));
+}
+
+.profile-hero__avatar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.profile-avatar-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.profile-avatar-trigger :deep(.el-avatar) {
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.14);
+  border: 4px solid rgba(255, 255, 255, 0.95);
+}
+
+.profile-stats {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.profile-form-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.profile-cropper-shell {
+  position: relative;
+  min-height: 340px;
+  overflow: hidden;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.96), rgba(241, 245, 249, 0.9));
+}
+
+@media (min-width: 1024px) {
+  .profile-hero {
+    grid-template-columns: 180px minmax(0, 1fr);
+    align-items: center;
+  }
+
+  .profile-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .profile-form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+</style>
